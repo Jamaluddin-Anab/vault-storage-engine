@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod error;
 mod logging;
+mod storage;
 
 fn main() {
     let args = Args::parse();
