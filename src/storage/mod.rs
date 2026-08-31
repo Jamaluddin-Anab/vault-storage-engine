@@ -1,1 +1,1 @@
-mod storage_engine;
+pub(crate) mod storage_engine;

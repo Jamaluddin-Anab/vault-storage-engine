@@ -18,6 +18,7 @@ impl StorageEngine {
             .write(true)
             .read(true)
             .create(true)
+            .truncate(false)
             .open(Path::new("data.db"))
             .map_err(AppError::LoadDbFile)?;
 
@@ -70,14 +71,17 @@ impl StorageEngine {
         }
     }
 
-    pub(crate) fn put(&mut self, key: &str, value: &str) -> Result<(), AppError> {
-        if key.len() == 0
+    pub(crate) fn put(&mut self, key: String, value: String) -> Result<(), AppError> {
+        if key.is_empty()
             || key.len() > Self::KEY_LEN as usize
             || value.len() > Self::VALUE_LEN as usize
         {
             return Err(AppError::InvalidKeyValueLen(key.len(), value.len()));
         }
-        let offset = self.file.stream_position().map_err(AppError::SeekInDb)?;
+        let offset = self
+            .file
+            .seek(SeekFrom::End(0))
+            .map_err(AppError::SeekInDb)?;
         let key_len = key.len() as u32;
         let value_len = value.len() as u32;
 
@@ -92,29 +96,78 @@ impl StorageEngine {
         self.file.write_all(&record).map_err(AppError::WriteToDb)?;
         self.file.flush().map_err(AppError::WriteToDb)?;
 
-        self.index.insert(key.to_string(), offset as usize);
+        self.index.insert(key, offset as usize);
 
         Ok(())
     }
 
-    // pub(crate) fn get(&mut self, key: &str) -> Result<Option<String>, AppError> {
-    //
-    //     if key.len() == 0 || key.len() > Self::KEY_LEN as usize {
-    //         return Err(AppError::InvalidKey(key.len()));
-    //     }
-    //
-    //     if let Some(offset) = self.index.get(key) {
-    //         self.file.seek(SeekFrom::Start(*offset as u64)).map_err(AppError::SeekInDb)?;
-    //         let key_len = match Self::rebuild_len(&mut self.file)? {
-    //             Some(key_len) => key_len,
-    //             None => return Ok(None)
-    //         };
-    //         let value_len = match Self::rebuild_len(&mut self.file)? {
-    //             Some(key_len) => key_len,
-    //             None => return Ok(None)
-    //         };
-    //
-    //     }
-    //     Ok(None)
-    // }
+    pub(crate) fn get(&mut self, key: String) -> Result<Option<String>, AppError> {
+        if key.is_empty() || key.len() > Self::KEY_LEN as usize {
+            return Err(AppError::InvalidKey(key.len()));
+        }
+
+        if let Some(offset) = self.index.get(&key) {
+            let file = &mut self.file;
+
+            file.seek(SeekFrom::Start(*offset as u64))
+                .map_err(AppError::SeekInDb)?;
+
+            let key_len = match Self::rebuild_len(file)? {
+                Some(key_len) => key_len,
+                None => return Ok(None),
+            };
+            let value_len = match Self::rebuild_len(file)? {
+                Some(value_len) => value_len,
+                None => return Ok(None),
+            };
+            let mut buf = vec![0u8; key_len as usize];
+            file.read_exact(&mut buf).map_err(AppError::ReadKey)?;
+            let _key = String::from_utf8(buf).map_err(AppError::ConvertUtf8ToString)?;
+
+            if !_key.eq(&key) {
+                return Ok(None);
+            }
+
+            let mut buf = vec![0u8; value_len as usize];
+            file.read_exact(&mut buf).map_err(AppError::ReadValue)?;
+            let value = String::from_utf8(buf).map_err(AppError::ConvertUtf8ToString)?;
+
+            return Ok(Some(value));
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // Helper function to clean up the test database file before and after tests run
+    fn cleanup_test_db(file_path: &str) {
+        if Path::new(file_path).exists() {
+            let _ = fs::remove_file(file_path);
+        }
+    }
+
+    #[test]
+    fn test_put_get() -> Result<(), AppError> {
+        cleanup_test_db("data.db");
+        let mut engine = StorageEngine::start()?;
+
+        engine.put("name".to_string(), "Jamal".to_string())?;
+        engine.put("age".to_string(), "24".to_string())?;
+        assert_eq!(engine.get("name".to_string())?, Some("Jamal".to_string()));
+
+        engine.put("province".to_string(), "kabul".to_string())?;
+        assert_eq!(
+            engine.get("province".to_string())?,
+            Some("kabul".to_string())
+        );
+        assert_eq!(engine.get("name".to_string())?, Some("Jamal".to_string()));
+
+        cleanup_test_db("data.db");
+        Ok(())
+    }
 }

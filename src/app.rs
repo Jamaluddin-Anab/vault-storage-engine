@@ -1,7 +1,8 @@
-use crate::cli::Args;
+use crate::cli::{Args, Commands};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::logging::Logging;
+use crate::storage::storage_engine::StorageEngine;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -12,7 +13,18 @@ impl App {
         let config = Self::load_config(&args.config)?;
         Self::initialize_logging(&config)?;
 
-        info!("App run successfully");
+        if let Some(commands) = args.commands {
+            let mut engine = StorageEngine::start()?;
+            match commands {
+                Commands::Set { key, value } => {
+                    engine.put(key, value)?;
+                }
+                Commands::Get { key } => match engine.get(key)? {
+                    Some(value) => info!("value: {value}"),
+                    None => info!("value not found"),
+                },
+            }
+        }
 
         Ok(())
     }
