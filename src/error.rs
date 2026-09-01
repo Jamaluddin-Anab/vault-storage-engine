@@ -28,4 +28,6 @@ pub(crate) enum AppError {
     WriteToDb(Error),
     #[error("key len should be 256 : {0}")]
     InvalidKey(usize),
+    #[error("storage corrupted.")]
+    CorruptedDb,
 }
