@@ -19,7 +19,7 @@ impl App {
                 Commands::Set { key, value } => {
                     engine.put(key, value)?;
                 }
-                Commands::Get { key } => match engine.get(key)? {
+                Commands::Get { key } => match engine.get(key.as_str())? {
                     Some(value) => info!("value: {value}"),
                     None => info!("value not found"),
                 },

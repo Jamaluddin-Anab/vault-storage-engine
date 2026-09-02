@@ -30,4 +30,12 @@ pub(crate) enum AppError {
     InvalidKey(usize),
     #[error("storage corrupted.")]
     CorruptedDb,
+    #[error("can not load index.db file. {0}")]
+    LoadIndexFile(Error),
+    #[error("can not write data to index.db file. {0}")]
+    WriteToIndex(Error),
+    #[error("index corrupted")]
+    CorruptedIndex,
+    #[error("can not seek inside index.db file: {0}")]
+    SeekInIndex(Error),
 }
