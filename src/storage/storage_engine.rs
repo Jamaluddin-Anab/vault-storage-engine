@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::storage::index::Index;
 use crate::storage::storage_engine::ReadStatus::{CompleteRead, CorruptTail, Eof};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -114,5 +115,110 @@ impl StorageEngine {
         }
 
         Ok(None)
+    }
+
+    pub(crate) fn compact(&mut self) -> Result<(), AppError> {
+        let mut data_temp = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("data.temp.db")
+            .map_err(AppError::LoadTempDbFile)?;
+
+        let mut index_temp = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("index.temp.db")
+            .map_err(AppError::LoadTempIndexFile)?;
+
+        let mut compact_offset = HashMap::<String, u64>::new();
+
+        for (key, old_offset) in &self.index.index {
+            self.file
+                .seek(SeekFrom::Start(*old_offset))
+                .map_err(AppError::SeekInDb)?;
+
+            let key_len = match Self::rebuild_len(&mut self.file)? {
+                Eof => break,
+                CompleteRead(key_len) => key_len,
+                CorruptTail => return Err(AppError::CorruptedDb),
+            };
+            let value_len = match Self::rebuild_len(&mut self.file)? {
+                Eof => break,
+                CompleteRead(value_len) => value_len,
+                CorruptTail => return Err(AppError::CorruptedDb),
+            };
+            self.file
+                .seek(SeekFrom::Current(key_len as i64))
+                .map_err(AppError::SeekInDb)?;
+
+            let mut value_buf = vec![0u8; value_len as usize];
+            self.file
+                .read_exact(&mut value_buf)
+                .map_err(|_| AppError::CorruptedDb)?;
+
+            let new_offset = data_temp
+                .stream_position()
+                .map_err(AppError::SeekInTempDb)?;
+            let key_len_u32 = key.len() as u32;
+            let value_len_u32 = value_buf.len() as u32;
+
+            let record = [
+                key_len_u32.to_le_bytes().as_slice(),
+                value_len_u32.to_le_bytes().as_slice(),
+                key.as_bytes(),
+                &value_buf,
+            ]
+            .concat();
+
+            data_temp
+                .write_all(&record)
+                .map_err(AppError::WriteToTempDb)?;
+            compact_offset.insert(key.clone(), new_offset);
+        }
+        data_temp.flush().map_err(AppError::WriteToTempDb)?;
+
+        for (key, offset) in &compact_offset {
+            let key_len = key.len() as u32;
+            let record = [
+                key_len.to_le_bytes().as_slice(),
+                key.as_bytes(),
+                &offset.to_le_bytes(),
+            ]
+            .concat();
+            index_temp
+                .write_all(&record)
+                .map_err(AppError::WriteToTempIndex)?;
+        }
+        index_temp.flush().map_err(AppError::WriteToTempIndex)?;
+
+        drop(index_temp);
+        drop(data_temp);
+
+        std::fs::rename("data.temp.db", "data.db").map_err(AppError::ReplaceDbFile)?;
+        std::fs::rename("index.temp.db", "index.db").map_err(AppError::ReplaceIndexFile)?;
+
+        self.file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open("data.db")
+            .map_err(AppError::LoadDbFile)?;
+
+        let new_index = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open("index.db")
+            .map_err(AppError::LoadIndexFile)?;
+
+        self.index.update_memory_map(compact_offset, new_index);
+
+        Ok(())
     }
 }

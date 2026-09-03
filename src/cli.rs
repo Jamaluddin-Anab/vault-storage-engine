@@ -21,4 +21,5 @@ pub(super) enum Commands {
         #[arg(short, long)]
         key: String,
     },
+    Compact,
 }

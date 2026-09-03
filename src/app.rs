@@ -15,6 +15,7 @@ impl App {
 
         if let Some(commands) = args.commands {
             let mut engine = StorageEngine::start()?;
+
             match commands {
                 Commands::Set { key, value } => {
                     engine.put(key, value)?;
@@ -23,6 +24,9 @@ impl App {
                     Some(value) => info!("value: {value}"),
                     None => info!("value not found"),
                 },
+                Commands::Compact => {
+                    engine.compact()?;
+                }
             }
         }
 

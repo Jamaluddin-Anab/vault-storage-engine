@@ -38,4 +38,18 @@ pub(crate) enum AppError {
     CorruptedIndex,
     #[error("can not seek inside index.db file: {0}")]
     SeekInIndex(Error),
+    #[error("can not load temp.db file: {0}")]
+    LoadTempDbFile(Error),
+    #[error("can not write data to data.db.tmp file. {0}")]
+    WriteToTempDb(Error),
+    #[error("can not seek inside data.temp.db file: {0}")]
+    SeekInTempDb(Error),
+    #[error("can not replace .tmp file to .db file: {0}")]
+    ReplaceDbFile(Error),
+    #[error("can not write to TempIndex file: {0}")]
+    WriteToTempIndex(Error),
+    #[error("can not replace .tmp file to .db file: {0}")]
+    ReplaceIndexFile(Error),
+    #[error("can not load index.temp.db file: {0}")]
+    LoadTempIndexFile(Error),
 }

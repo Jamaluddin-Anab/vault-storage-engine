@@ -89,4 +89,9 @@ impl Index {
     pub(super) fn get(&self, key: &str) -> Option<&u64> {
         self.index.get(key)
     }
+
+    pub(super) fn update_memory_map(&mut self, new_map: HashMap<String, u64>, new_file: File) {
+        self.index = new_map;
+        self.file = new_file;
+    }
 }
