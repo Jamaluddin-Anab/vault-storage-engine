@@ -52,4 +52,12 @@ pub(crate) enum AppError {
     ReplaceIndexFile(Error),
     #[error("can not load index.temp.db file: {0}")]
     LoadTempIndexFile(Error),
+    #[error("can not create wal file: {0}")]
+    CreateWalFile(Error),
+    #[error("can not write to wal file: {0}")]
+    WriteToWal(Error),
+    #[error("can not clean wal file: {0}")]
+    CleanWalFile(Error),
+    #[error("can not seek in wal file: {0}")]
+    SeekInWal(Error),
 }

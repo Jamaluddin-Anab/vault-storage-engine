@@ -3,24 +3,34 @@ mod test {
     use crate::error::AppError;
     use crate::storage::index::Index;
     use crate::storage::storage_engine::StorageEngine;
+    use crate::storage::wal::Wal;
     use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
 
-    fn get_temp_db_paths() -> (PathBuf, PathBuf) {
+    fn get_temp_db_paths() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         let data_path = std::env::temp_dir().join("test_data.db");
         let index_path = std::env::temp_dir().join("test_index.db");
-        (data_path, index_path)
+        let put_file = std::env::temp_dir().join("test_put.wal");
+        let compact_file = std::env::temp_dir().join("test_compact.wal");
+        (data_path, index_path, put_file, compact_file)
     }
 
-    fn cleanup_files(paths: &(PathBuf, PathBuf)) {
+    fn cleanup_files(paths: &(PathBuf, PathBuf, PathBuf, PathBuf)) {
         let _ = std::fs::remove_file(&paths.0);
         let _ = std::fs::remove_file(&paths.1);
+        let _ = std::fs::remove_file(&paths.2);
+        let _ = std::fs::remove_file(&paths.3);
     }
 
     // Helper to build a completely initialized StorageEngine targeting specific custom files
-    fn build_test_engine(data_path: &PathBuf, index_path: &PathBuf) -> StorageEngine {
+    fn build_test_engine(
+        data_path: &PathBuf,
+        index_path: &PathBuf,
+        put_file: &PathBuf,
+        compact_file: &PathBuf,
+    ) -> StorageEngine {
         let file = OpenOptions::new()
             .write(true)
             .read(true)
@@ -38,18 +48,40 @@ mod test {
             .open(index_path)
             .unwrap();
 
+        // Create a blank tracking file put_file manually
+        let put_file = OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create(true)
+            .truncate(true)
+            .open(put_file)
+            .unwrap();
+
+        // Create a blank tracking file put_file manually
+        let compact_file = OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create(true)
+            .truncate(true)
+            .open(compact_file)
+            .unwrap();
+
         let index = Index {
             file: index_file,
             index: HashMap::<String, u64>::new(),
         };
+        let wal = Wal {
+            put_file,
+            compact_file,
+        };
 
-        StorageEngine { file, index }
+        StorageEngine { file, index, wal }
     }
 
     #[test]
     fn test_empty_db() {
         let paths = get_temp_db_paths();
-        let mut engine = build_test_engine(&paths.0, &paths.1);
+        let mut engine = build_test_engine(&paths.0, &paths.1, &paths.2, &paths.3);
 
         // Fetching from a completely pristine setup should yield Ok(None) safely
         let res = engine.get("any_key");
@@ -62,7 +94,7 @@ mod test {
     #[test]
     fn test_valid_db() {
         let paths = get_temp_db_paths();
-        let mut engine = build_test_engine(&paths.0, &paths.1);
+        let mut engine = build_test_engine(&paths.0, &paths.1, &paths.2, &paths.3);
 
         // Put a regular entry to assert full storage round-trip capabilities
         let put_res = engine.put("hello".to_string(), "world".to_string());
@@ -79,7 +111,7 @@ mod test {
     #[test]
     fn test_partial_header() {
         let paths = get_temp_db_paths();
-        let mut engine = build_test_engine(&paths.0, &paths.1);
+        let mut engine = build_test_engine(&paths.0, &paths.1, &paths.2, &paths.3);
 
         // Pretend key exists at offset 0 inside the index cache map
         engine.index.index.insert("target_key".to_string(), 0);
@@ -101,7 +133,7 @@ mod test {
     #[test]
     fn test_partial_key() {
         let paths = get_temp_db_paths();
-        let mut engine = build_test_engine(&paths.0, &paths.1);
+        let mut engine = build_test_engine(&paths.0, &paths.1, &paths.2, &paths.3);
 
         engine
             .index
@@ -128,7 +160,7 @@ mod test {
     #[test]
     fn test_partial_value() {
         let paths = get_temp_db_paths();
-        let mut engine = build_test_engine(&paths.0, &paths.1);
+        let mut engine = build_test_engine(&paths.0, &paths.1, &paths.2, &paths.3);
 
         let target_key = "my_key";
         engine.index.index.insert(target_key.to_string(), 0);

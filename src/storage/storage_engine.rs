@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::storage::index::Index;
 use crate::storage::storage_engine::ReadStatus::{CompleteRead, CorruptTail, Eof};
+use crate::storage::wal::{Operation, Wal};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -9,6 +10,7 @@ use std::path::Path;
 pub(crate) struct StorageEngine {
     pub(super) file: File,
     pub(super) index: Index,
+    pub(super) wal: Wal,
 }
 
 pub(super) enum ReadStatus {
@@ -31,8 +33,9 @@ impl StorageEngine {
             .map_err(AppError::LoadDbFile)?;
 
         let index = Index::load_index()?;
+        let wal = Wal::new()?;
 
-        Ok(StorageEngine { file, index })
+        Ok(StorageEngine { file, index, wal })
     }
 
     pub(super) fn rebuild_len(file: &mut File) -> Result<ReadStatus, AppError> {
@@ -58,6 +61,9 @@ impl StorageEngine {
             .seek(SeekFrom::End(0))
             .map_err(AppError::SeekInDb)?;
 
+        self.wal
+            .put(Operation::WriteInDb, key.as_str(), value.as_str(), offset)?;
+
         let key_len = key.len() as u32;
         let value_len = value.len() as u32;
 
@@ -70,9 +76,12 @@ impl StorageEngine {
         .concat();
 
         self.file.write_all(&record).map_err(AppError::WriteToDb)?;
-        self.file.flush().map_err(AppError::WriteToDb)?;
+        self.file.sync_all().map_err(AppError::WriteToDb)?;
+
+        self.wal.mark_write_index()?;
 
         self.index.put(key, offset)?;
+        self.wal.clear_wal_put()?;
 
         Ok(())
     }
