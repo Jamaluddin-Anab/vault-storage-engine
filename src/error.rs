@@ -60,4 +60,8 @@ pub(crate) enum AppError {
     CleanWalFile(Error),
     #[error("can not seek in wal file: {0}")]
     SeekInWal(Error),
+    #[error("can not Read wal file: {0}")]
+    ReadWalFile(Error),
+    #[error("wal file is corrupted.")]
+    CorruptedWal,
 }

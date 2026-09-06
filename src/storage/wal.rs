@@ -4,7 +4,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(super) enum Operation {
     WriteInDb = 1,
     WriteInIndex = 2,
