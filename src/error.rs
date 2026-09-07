@@ -64,4 +64,8 @@ pub(crate) enum AppError {
     ReadWalFile(Error),
     #[error("wal file is corrupted.")]
     CorruptedWal,
+    #[error("can not load wal file: {0}")]
+    LoadWalFile(Error),
+    #[error("can not truncate index.db file: {0}")]
+    TruncateIndex(Error),
 }

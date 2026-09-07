@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod test {
-    use std::fs::{OpenOptions};
-    use std::io::{Write, Seek, SeekFrom};
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use crate::error::AppError;
     use crate::storage::recovery::*;
     use crate::storage::wal::Operation;
+    use std::fs::{File, OpenOptions};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Helper to generate non-conflicting, clean temporary WAL paths for each test case
     fn get_temp_wal_path() -> PathBuf {
@@ -215,8 +215,12 @@ mod test {
 
         let res = recovery.read_put_wal();
         assert!(res.is_err());
-        assert!(matches!(res.unwrap_err(), AppError::ConvertUtf8ToString(..)));
+        assert!(matches!(
+            res.unwrap_err(),
+            AppError::CorruptedWal
+        ));
 
         cleanup_file(&path);
     }
+    
 }

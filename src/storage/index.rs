@@ -37,7 +37,7 @@ impl Index {
             let key_len = match StorageEngine::rebuild_len(file)? {
                 Eof => break,
                 CompleteRead(key_len) => key_len,
-                CorruptTail => return Err(AppError::CorruptedIndex),
+                CorruptTail(_) => return Err(AppError::CorruptedIndex),
             };
             if key_len > Self::MAX_LEN as u64 {
                 return Err(AppError::CorruptedIndex);

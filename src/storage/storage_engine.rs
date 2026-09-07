@@ -16,12 +16,12 @@ pub(crate) struct StorageEngine {
 pub(super) enum ReadStatus {
     Eof,
     CompleteRead(u64),
-    CorruptTail,
+    CorruptTail(u64),
 }
 
 impl StorageEngine {
-    const KEY_LEN: u64 = 256;
-    const VALUE_LEN: u64 = 1024 * 1024;
+    pub(super) const KEY_LEN: u64 = 256;
+    pub(super) const VALUE_LEN: u64 = 1024 * 1024;
 
     pub(crate) fn start() -> Result<StorageEngine, AppError> {
         let file = OpenOptions::new()
@@ -43,7 +43,7 @@ impl StorageEngine {
         match file.read(&mut buf) {
             Ok(0) => Ok(Eof), // clean end of file
             Ok(4) => Ok(CompleteRead(u32::from_le_bytes(buf) as u64)),
-            Ok(_) => Ok(CorruptTail), // partially read at the very end of file (corrupt tail) EOF
+            Ok(read_byte) => Ok(CorruptTail(read_byte as u64)), // partially read at the very end of file (corrupt tail) EOF
             Err(err) => Err(AppError::ReadHeaderLen(err)),
         }
     }
@@ -100,12 +100,12 @@ impl StorageEngine {
             let key_len = match Self::rebuild_len(file)? {
                 Eof => return Ok(None),
                 CompleteRead(key_len) => key_len,
-                CorruptTail => return Err(AppError::CorruptedDb),
+                CorruptTail(_) => return Err(AppError::CorruptedDb),
             };
             let value_len = match Self::rebuild_len(file)? {
                 Eof => return Ok(None),
                 CompleteRead(value_len) => value_len,
-                CorruptTail => return Err(AppError::CorruptedDb),
+                CorruptTail(_) => return Err(AppError::CorruptedDb),
             };
 
             let mut buf = vec![0u8; key_len as usize];
@@ -153,12 +153,12 @@ impl StorageEngine {
             let key_len = match Self::rebuild_len(&mut self.file)? {
                 Eof => break,
                 CompleteRead(key_len) => key_len,
-                CorruptTail => return Err(AppError::CorruptedDb),
+                CorruptTail(_) => return Err(AppError::CorruptedDb),
             };
             let value_len = match Self::rebuild_len(&mut self.file)? {
                 Eof => break,
                 CompleteRead(value_len) => value_len,
-                CorruptTail => return Err(AppError::CorruptedDb),
+                CorruptTail(_) => return Err(AppError::CorruptedDb),
             };
             self.file
                 .seek(SeekFrom::Current(key_len as i64))
