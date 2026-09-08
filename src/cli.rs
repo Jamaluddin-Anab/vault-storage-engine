@@ -22,4 +22,5 @@ pub(super) enum Commands {
         key: String,
     },
     Compact,
+    Recovery,
 }

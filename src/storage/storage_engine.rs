@@ -1,5 +1,6 @@
 use crate::error::AppError;
 use crate::storage::index::Index;
+use crate::storage::recovery::Recovery;
 use crate::storage::storage_engine::ReadStatus::{CompleteRead, CorruptTail, Eof};
 use crate::storage::wal::{Operation, Wal};
 use std::collections::HashMap;
@@ -16,7 +17,7 @@ pub(crate) struct StorageEngine {
 pub(super) enum ReadStatus {
     Eof,
     CompleteRead(u64),
-    CorruptTail(u64),
+    CorruptTail,
 }
 
 impl StorageEngine {
@@ -24,6 +25,8 @@ impl StorageEngine {
     pub(super) const VALUE_LEN: u64 = 1024 * 1024;
 
     pub(crate) fn start() -> Result<StorageEngine, AppError> {
+        Recovery::start()?.recovery()?;
+
         let file = OpenOptions::new()
             .write(true)
             .read(true)
@@ -36,16 +39,6 @@ impl StorageEngine {
         let wal = Wal::new()?;
 
         Ok(StorageEngine { file, index, wal })
-    }
-
-    pub(super) fn rebuild_len(file: &mut File) -> Result<ReadStatus, AppError> {
-        let mut buf = [0u8; 4];
-        match file.read(&mut buf) {
-            Ok(0) => Ok(Eof), // clean end of file
-            Ok(4) => Ok(CompleteRead(u32::from_le_bytes(buf) as u64)),
-            Ok(read_byte) => Ok(CorruptTail(read_byte as u64)), // partially read at the very end of file (corrupt tail) EOF
-            Err(err) => Err(AppError::ReadHeaderLen(err)),
-        }
     }
 
     pub(crate) fn put(&mut self, key: String, value: String) -> Result<(), AppError> {
@@ -81,6 +74,7 @@ impl StorageEngine {
         self.wal.mark_write_index()?;
 
         self.index.put(key, offset)?;
+
         self.wal.clear_wal_put()?;
 
         Ok(())
@@ -100,12 +94,12 @@ impl StorageEngine {
             let key_len = match Self::rebuild_len(file)? {
                 Eof => return Ok(None),
                 CompleteRead(key_len) => key_len,
-                CorruptTail(_) => return Err(AppError::CorruptedDb),
+                CorruptTail => return Err(AppError::CorruptedDb),
             };
             let value_len = match Self::rebuild_len(file)? {
                 Eof => return Ok(None),
                 CompleteRead(value_len) => value_len,
-                CorruptTail(_) => return Err(AppError::CorruptedDb),
+                CorruptTail => return Err(AppError::CorruptedDb),
             };
 
             let mut buf = vec![0u8; key_len as usize];
@@ -124,6 +118,16 @@ impl StorageEngine {
         }
 
         Ok(None)
+    }
+
+    pub(super) fn rebuild_len(file: &mut File) -> Result<ReadStatus, AppError> {
+        let mut buf = [0u8; 4];
+        match file.read(&mut buf) {
+            Ok(0) => Ok(Eof), // clean end of file
+            Ok(4) => Ok(CompleteRead(u32::from_le_bytes(buf) as u64)),
+            Ok(_) => Ok(CorruptTail), // partially read at the very end of file (corrupt tail) EOF
+            Err(err) => Err(AppError::ReadHeaderLen(err)),
+        }
     }
 
     pub(crate) fn compact(&mut self) -> Result<(), AppError> {
@@ -153,12 +157,12 @@ impl StorageEngine {
             let key_len = match Self::rebuild_len(&mut self.file)? {
                 Eof => break,
                 CompleteRead(key_len) => key_len,
-                CorruptTail(_) => return Err(AppError::CorruptedDb),
+                CorruptTail => return Err(AppError::CorruptedDb),
             };
             let value_len = match Self::rebuild_len(&mut self.file)? {
                 Eof => break,
                 CompleteRead(value_len) => value_len,
-                CorruptTail(_) => return Err(AppError::CorruptedDb),
+                CorruptTail => return Err(AppError::CorruptedDb),
             };
             self.file
                 .seek(SeekFrom::Current(key_len as i64))

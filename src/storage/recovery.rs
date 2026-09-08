@@ -29,12 +29,12 @@ pub(super) enum ReadPutWalStatus {
     Record(WalRecord),
 }
 
-pub(super) struct Recovery {
+pub(crate) struct Recovery {
     pub(super) put_file: File,
 }
 
 impl Recovery {
-    pub(super) fn start() -> Result<Recovery, AppError> {
+    pub(crate) fn start() -> Result<Recovery, AppError> {
         let put_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -94,8 +94,8 @@ impl Recovery {
         match self.put_file.read(&mut operation_buf) {
             Ok(0) => Ok(ReadOperationStatus::Eof),
             Ok(1) => match operation_buf[0] {
-                1 => Ok(CompleteRead(Operation::WriteInDb)),
-                2 => Ok(CompleteRead(Operation::WriteInIndex)),
+                1 => Ok(CompleteRead(WriteInDb)),
+                2 => Ok(CompleteRead(WriteInIndex)),
                 _ => Err(AppError::CorruptedWal),
             },
             Ok(_) => Ok(ReadOperationStatus::InterruptedFile),
@@ -112,7 +112,7 @@ impl Recovery {
         }
     }
 
-    pub(super) fn recovery(&mut self) -> Result<(), AppError> {
+    pub(crate) fn recovery(&mut self) -> Result<(), AppError> {
         let wal_record = match self.read_put_wal()? {
             EndOfFile => return Ok(()),
             Record(wal_record) => wal_record,
@@ -133,8 +133,7 @@ impl Recovery {
             .open(Path::new(file_name))
     }
 
-
-    pub(crate) fn db_recovery(&mut self, wal_record: WalRecord) -> Result<(), AppError> {
+    pub(super) fn db_recovery(&mut self, wal_record: WalRecord) -> Result<(), AppError> {
         let mut db_file = Self::get_file("data.db").map_err(AppError::LoadDbFile)?;
         db_file
             .seek(SeekFrom::Start(wal_record.offset))
@@ -221,8 +220,7 @@ impl Recovery {
         self.index_recovery(wal_record)
     }
 
-
-    pub(crate) fn index_recovery(&mut self, wal_record: WalRecord) -> Result<(), AppError> {
+    pub(super) fn index_recovery(&mut self, wal_record: WalRecord) -> Result<(), AppError> {
         let mut index_file = Self::get_file("index.db").map_err(AppError::LoadIndexFile)?;
         loop {
             let record_start = index_file
@@ -232,7 +230,7 @@ impl Recovery {
             let key_len = match StorageEngine::rebuild_len(&mut index_file)? {
                 Eof => return self.write_in_index(wal_record, index_file),
                 ReadStatus::CompleteRead(key_len) => key_len,
-                CorruptTail(_) => {
+                CorruptTail => {
                     self.truncate_index_file(&mut index_file, record_start)?;
                     return self.write_in_index(wal_record, index_file);
                 }
@@ -290,7 +288,7 @@ impl Recovery {
         Ok(())
     }
 
-    pub(crate) fn clear_put_wal_file(&mut self) -> Result<(), AppError> {
+    pub(super) fn clear_put_wal_file(&mut self) -> Result<(), AppError> {
         self.put_file.set_len(0).map_err(AppError::CleanWalFile)?;
         self.put_file.sync_all().map_err(AppError::CleanWalFile)?;
         Ok(())
@@ -321,7 +319,4 @@ impl Recovery {
 
         Ok(())
     }
-
 }
-
-

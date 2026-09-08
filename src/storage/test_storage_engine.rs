@@ -8,12 +8,15 @@ mod test {
     use std::fs::OpenOptions;
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn get_temp_db_paths() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
-        let data_path = std::env::temp_dir().join("test_data.db");
-        let index_path = std::env::temp_dir().join("test_index.db");
-        let put_file = std::env::temp_dir().join("test_put.wal");
-        let compact_file = std::env::temp_dir().join("test_compact.wal");
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let data_path = std::env::temp_dir().join(format!("test_data_{}.db", id));
+        let index_path = std::env::temp_dir().join(format!("test_index_{}.db", id));
+        let put_file = std::env::temp_dir().join(format!("test_put_{}.wal", id));
+        let compact_file = std::env::temp_dir().join(format!("test_compact_{}.wal", id));
         (data_path, index_path, put_file, compact_file)
     }
 

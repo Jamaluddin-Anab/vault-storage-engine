@@ -215,12 +215,345 @@ mod test {
 
         let res = recovery.read_put_wal();
         assert!(res.is_err());
-        assert!(matches!(
-            res.unwrap_err(),
-            AppError::CorruptedWal
-        ));
+        assert!(matches!(res.unwrap_err(), AppError::CorruptedWal));
 
         cleanup_file(&path);
     }
-    
+
+    // second half tests
+    fn setup_test_wal_record(op: Operation, key: &str, val: &str, offset: u64) -> WalRecord {
+        WalRecord {
+            operation: op,
+            key: key.to_string(),
+            value: val.to_string(),
+            offset,
+        }
+    }
+
+    fn clean_and_create_file(name: &str) -> File {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(name)
+            .unwrap()
+    }
+
+    fn teardown_files() {
+        let _ = std::fs::remove_file("data.db");
+        let _ = std::fs::remove_file("index.db");
+        let _ = std::fs::remove_file("put.wal");
+    }
+
+    // Writes a manual binary record layout to the log file to test read_put_wal and recovery loops
+    fn write_raw_wal(op: u8, key: &str, val: &str, offset: u64) {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("put.wal")
+            .unwrap();
+        f.write_all(&[op]).unwrap();
+        f.write_all(&(key.len() as u32).to_le_bytes()).unwrap();
+        f.write_all(&(val.len() as u32).to_le_bytes()).unwrap();
+        f.write_all(key.as_bytes()).unwrap();
+        f.write_all(val.as_bytes()).unwrap();
+        f.write_all(&offset.to_le_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    // ========================================================================== --
+    // PART 1: STRENGTHENED SPECIFIC RECOVERY SCENARIOS                          --
+    // ========================================================================== --
+
+    #[test]
+    fn test_wal_empty() {
+        let mut rec = Recovery::start().unwrap();
+        rec.clear_put_wal_file().unwrap();
+
+        let status = rec.read_put_wal().unwrap();
+        assert!(matches!(status, ReadPutWalStatus::EndOfFile));
+
+        // Assert WAL is completely empty on disk
+        let metadata = std::fs::metadata("put.wal").unwrap();
+        assert_eq!(metadata.len(), 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_db_data_missing() {
+        let _db = clean_and_create_file("data.db");
+        let _idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+
+        let wal_record =
+            setup_test_wal_record(Operation::WriteInDb, "missing_key", "some_value", 0);
+        assert!(rec.db_recovery(wal_record).is_ok());
+
+        // 1. Verify data.db contains the correct record
+        let mut db_file = File::open("data.db").unwrap();
+        let mut db_buf = Vec::new();
+        db_file.read_to_end(&mut db_buf).unwrap();
+
+        let expected_record = [
+            (11u32).to_le_bytes().as_slice(), // key_len ("missing_key")
+            (10u32).to_le_bytes().as_slice(), // value_len ("some_value")
+            b"missing_key",
+            b"some_value",
+        ]
+        .concat();
+        assert_eq!(db_buf, expected_record);
+
+        // 2. Verify state transition updated index.db and cleared put.wal
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        assert!(std::fs::metadata("index.db").unwrap().len() > 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_db_data_partially_written() {
+        let mut db = clean_and_create_file("data.db");
+        let _idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+
+        let wal_record =
+            setup_test_wal_record(Operation::WriteInDb, "partial_key", "long_value", 0);
+        db.write_all(&5u32.to_le_bytes()).unwrap(); // Corrupt payload data header
+        db.flush().unwrap();
+
+        assert!(rec.db_recovery(wal_record).is_ok());
+
+        // Verify fallback repair overwrote the bad bytes cleanly
+        let mut db_buf = Vec::new();
+        File::open("data.db")
+            .unwrap()
+            .read_to_end(&mut db_buf)
+            .unwrap();
+        assert_eq!(db_buf.len(), 4 + 4 + 11 + 10); // len fields + key + value
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_db_data_already_correct() {
+        let mut db = clean_and_create_file("data.db");
+        let _idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+
+        let k = "correct_key";
+        let v = "correct_value";
+        let wal_record = setup_test_wal_record(Operation::WriteInDb, k, v, 0);
+
+        db.write_all(&(k.len() as u32).to_le_bytes()).unwrap();
+        db.write_all(&(v.len() as u32).to_le_bytes()).unwrap();
+        db.write_all(k.as_bytes()).unwrap();
+        db.write_all(v.as_bytes()).unwrap();
+        db.flush().unwrap();
+
+        assert!(rec.db_recovery(wal_record).is_ok());
+
+        // Ensure put.wal was zeroed out and index has the entry
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        assert!(std::fs::metadata("index.db").unwrap().len() > 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_index_key_missing() {
+        let _idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+
+        let wal_record =
+            setup_test_wal_record(Operation::WriteInIndex, "new_index_key", "val", 500);
+        assert!(rec.index_recovery(wal_record).is_ok());
+
+        // Verify index contents match recovery params
+        let mut idx_buf = Vec::new();
+        File::open("index.db")
+            .unwrap()
+            .read_to_end(&mut idx_buf)
+            .unwrap();
+        let expected_idx = [
+            (13u32).to_le_bytes().as_slice(),
+            b"new_index_key",
+            (500u64).to_le_bytes().as_slice(),
+        ]
+        .concat();
+        assert_eq!(idx_buf, expected_idx);
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_index_key_exists_with_correct_offset() {
+        let mut idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+
+        let target_key = "stable_key";
+        let wal_record = setup_test_wal_record(Operation::WriteInIndex, target_key, "val", 1024);
+
+        idx.write_all(&(target_key.len() as u32).to_le_bytes())
+            .unwrap();
+        idx.write_all(target_key.as_bytes()).unwrap();
+        idx.write_all(&1024u64.to_le_bytes()).unwrap();
+        idx.flush().unwrap();
+
+        assert!(rec.index_recovery(wal_record).is_ok());
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_index_key_exists_with_wrong_offset() {
+        let mut idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+
+        let target_key = "migrated_key";
+        let wal_record = setup_test_wal_record(Operation::WriteInIndex, target_key, "val", 9999);
+
+        // Write index pointing to outdated old offset (e.g. 1111)
+        idx.write_all(&(target_key.len() as u32).to_le_bytes())
+            .unwrap();
+        idx.write_all(target_key.as_bytes()).unwrap();
+        idx.write_all(&1111u64.to_le_bytes()).unwrap();
+        idx.flush().unwrap();
+
+        let res = rec.index_recovery(wal_record);
+        assert!(res.is_ok());
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_index_partial_key() {
+        let mut idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+        let wal_record = setup_test_wal_record(Operation::WriteInIndex, "broken_index", "val", 45);
+
+        idx.write_all(&200u32.to_le_bytes()).unwrap(); // Corrupt boundary
+        idx.flush().unwrap();
+
+        assert!(rec.index_recovery(wal_record).is_ok());
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_index_partial_offset() {
+        let mut idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+        let wal_record = setup_test_wal_record(Operation::WriteInIndex, "bad_offset", "val", 88);
+
+        idx.write_all(&10u32.to_le_bytes()).unwrap();
+        idx.write_all(b"ten_bytes_").unwrap();
+        idx.write_all(&[1u8, 2u8]).unwrap(); // Missing offset bytes
+        idx.flush().unwrap();
+
+        assert!(rec.index_recovery(wal_record).is_ok());
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_write_in_index_corrupted_utf8() {
+        let mut idx = clean_and_create_file("index.db");
+        let mut rec = Recovery::start().unwrap();
+        let wal_record = setup_test_wal_record(Operation::WriteInIndex, "utf8_fail", "val", 12);
+
+        idx.write_all(&4u32.to_le_bytes()).unwrap();
+        idx.write_all(&[0, 159, 146, 150]).unwrap(); // Invalid UTF-8 bytes
+        idx.flush().unwrap();
+
+        assert!(rec.index_recovery(wal_record).is_ok());
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        teardown_files();
+    }
+
+    // ========================================================================== --
+    // PART 2: FULL STATE MACHINE FLOWS VIA rec.recovery()                        --
+    // ========================================================================== --
+
+    #[test]
+    fn test_flow_recovery_write_in_db_data_missing() {
+        let _db = clean_and_create_file("data.db");
+        let _idx = clean_and_create_file("index.db");
+
+        // Write the WAL as an active "WriteInDb" state step (Tag 1)
+        write_raw_wal(1, "flow_key_1", "flow_val_1", 0);
+        let mut rec = Recovery::start().unwrap();
+
+        // Run full entry point state parsing loop
+        assert!(rec.recovery().is_ok());
+
+        // 1. Verify Data was written completely to data.db
+        let mut db_buf = Vec::new();
+        File::open("data.db")
+            .unwrap()
+            .read_to_end(&mut db_buf)
+            .unwrap();
+        assert!(
+            db_buf
+                .windows(b"flow_key_1".len())
+                .any(|w| w == b"flow_key_1")
+        );
+
+        // 2. Verify the state automatically rolled forward to index.db and zeroed out put.wal
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        assert!(std::fs::metadata("index.db").unwrap().len() > 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_flow_recovery_write_in_db_data_already_correct() {
+        let mut db = clean_and_create_file("data.db");
+        let _idx = clean_and_create_file("index.db");
+
+        let k = "flow_key_2";
+        let v = "flow_val_2";
+
+        // Write accurate file segments manually ahead of time
+        db.write_all(&(k.len() as u32).to_le_bytes()).unwrap();
+        db.write_all(&(v.len() as u32).to_le_bytes()).unwrap();
+        db.write_all(k.as_bytes()).unwrap();
+        db.write_all(v.as_bytes()).unwrap();
+        db.flush().unwrap();
+
+        // Write the WAL matching this valid entry state (Tag 1)
+        write_raw_wal(1, k, v, 0);
+
+        let mut rec = Recovery::start().unwrap();
+        assert!(rec.recovery().is_ok());
+
+        // State loop should skip modifying data.db, build index.db, and truncate put.wal
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        assert!(std::fs::metadata("index.db").unwrap().len() > 0);
+        teardown_files();
+    }
+
+    #[test]
+    fn test_flow_recovery_write_in_index_index_missing() {
+        let _db = clean_and_create_file("data.db");
+        let _idx = clean_and_create_file("index.db");
+
+        // Write log record directly in the "WriteInIndex" phase (Tag 2)
+        write_raw_wal(2, "flow_key_3", "flow_val_3", 500);
+
+        let mut rec = Recovery::start().unwrap();
+        assert!(rec.recovery().is_ok());
+
+        // Main DB file should remain completely clean (untouched since it was index phase)
+        assert_eq!(std::fs::metadata("data.db").unwrap().len(), 0);
+
+        // Index file should contain the accurate payload mapping entry
+        let mut idx_buf = Vec::new();
+        File::open("index.db")
+            .unwrap()
+            .read_to_end(&mut idx_buf)
+            .unwrap();
+        let idx_str = String::from_utf8_lossy(&idx_buf);
+        assert!(idx_str.contains("flow_key_3"));
+
+        // WAL must be cleanly finalized down to 0 bytes
+        assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
+        teardown_files();
+    }
 }
