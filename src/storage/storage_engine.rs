@@ -55,7 +55,7 @@ impl StorageEngine {
             .map_err(AppError::SeekInDb)?;
 
         self.wal
-            .put(Operation::WriteInDb, key.as_str(), value.as_str(), offset)?;
+            .write_put_wal(Operation::WriteInDb, key.as_str(), value.as_str(), offset)?;
 
         let key_len = key.len() as u32;
         let value_len = value.len() as u32;

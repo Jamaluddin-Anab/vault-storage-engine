@@ -66,4 +66,6 @@ pub(crate) enum AppError {
     CorruptedWal,
     #[error("can not truncate index.db file: {0}")]
     TruncateIndex(Error),
+    #[error("unknown compact operation detected.")]
+    UnknownCompactOperation,
 }
