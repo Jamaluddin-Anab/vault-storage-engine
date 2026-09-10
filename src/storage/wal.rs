@@ -1,8 +1,7 @@
 use crate::error::AppError;
 use crate::storage::wal::CompactOperation::{
     CopyDataToTemp, CopyIndexToTemp, CreateDataTemp, CreateIndexTemp,
-    DataCopiedToTemp, DataTempCreated, DataTempReplaced, IndexCopiedToTemp, IndexTempCreated,
-    IndexTempReplaced, ReplaceDataTemp, ReplaceIndexTemp,
+    ReplaceDataTemp, ReplaceIndexTemp,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -24,17 +23,11 @@ impl Operation {
 #[derive(Copy, Clone, Debug)]
 pub(super) enum CompactOperation {
     CreateDataTemp = 1,
-    DataTempCreated = 2,
-    CreateIndexTemp = 3,
-    IndexTempCreated = 4,
-    CopyDataToTemp = 5,
-    DataCopiedToTemp = 6,
-    CopyIndexToTemp = 7,
-    IndexCopiedToTemp = 8,
-    ReplaceDataTemp = 9,
-    DataTempReplaced = 10,
-    ReplaceIndexTemp = 11,
-    IndexTempReplaced = 12,
+    CreateIndexTemp = 2,
+    CopyDataToTemp = 3,
+    CopyIndexToTemp = 4,
+    ReplaceDataTemp = 5,
+    ReplaceIndexTemp = 6,
 }
 
 impl CompactOperation {
@@ -45,17 +38,11 @@ impl CompactOperation {
     pub(super) fn from_bytes(bytes: [u8; 1]) -> Result<Self, AppError> {
         match bytes[0] {
             1 => Ok(CreateDataTemp),
-            2 => Ok(DataTempCreated),
-            3 => Ok(CreateIndexTemp),
-            4 => Ok(IndexTempCreated),
-            5 => Ok(CopyDataToTemp),
-            6 => Ok(DataCopiedToTemp),
-            7 => Ok(CopyIndexToTemp),
-            8 => Ok(IndexCopiedToTemp),
-            9 => Ok(ReplaceDataTemp),
-            10 => Ok(DataTempReplaced),
-            11 => Ok(ReplaceIndexTemp),
-            12 => Ok(IndexTempReplaced),
+            2 => Ok(CreateIndexTemp),
+            3 => Ok(CopyDataToTemp),
+            4 => Ok(CopyIndexToTemp),
+            5 => Ok(ReplaceDataTemp),
+            6 => Ok(ReplaceIndexTemp),
             _ => Err(AppError::UnknownCompactOperation),
         }
     }
@@ -156,19 +143,14 @@ impl Wal {
     }
 
     pub(super) fn advance_to_next_step(&mut self, compact_operation: CompactOperation) -> Result<(), AppError> {
+
         match compact_operation {
-            CreateDataTemp => self.write_compact_operation(DataTempCreated),
-            DataTempCreated => self.write_compact_operation(CreateIndexTemp),
-            CreateIndexTemp => self.write_compact_operation(IndexTempCreated),
-            IndexTempCreated => self.write_compact_operation(CopyDataToTemp),
-            CopyDataToTemp => self.write_compact_operation(DataCopiedToTemp),
-            DataCopiedToTemp => self.write_compact_operation(CopyIndexToTemp),
-            CopyIndexToTemp => self.write_compact_operation(IndexCopiedToTemp),
-            IndexCopiedToTemp => self.write_compact_operation(ReplaceDataTemp),
-            ReplaceDataTemp => self.write_compact_operation(DataTempReplaced),
-            DataTempReplaced => self.write_compact_operation(ReplaceIndexTemp),
-            ReplaceIndexTemp => self.write_compact_operation(IndexTempReplaced),
-            IndexTempReplaced => self.clear_wal_compact(),
+            CreateDataTemp => self.write_compact_operation(CreateIndexTemp),
+            CreateIndexTemp => self.write_compact_operation(CopyDataToTemp),
+            CopyDataToTemp => self.write_compact_operation(CopyIndexToTemp),
+            CopyIndexToTemp => self.write_compact_operation(ReplaceDataTemp),
+            ReplaceDataTemp => self.write_compact_operation(ReplaceIndexTemp),
+            ReplaceIndexTemp => self.clear_wal_compact()
         }
     }
 
@@ -234,18 +216,12 @@ mod tests {
 
         fn advance_to_next_step(&mut self, op: CompactOperation) -> Result<(), AppError> {
             match op {
-                CreateDataTemp => self.write_compact_operation(DataTempCreated),
-                DataTempCreated => self.write_compact_operation(CreateIndexTemp),
-                CreateIndexTemp => self.write_compact_operation(IndexTempCreated),
-                IndexTempCreated => self.write_compact_operation(CopyDataToTemp),
-                CopyDataToTemp => self.write_compact_operation(DataCopiedToTemp),
-                DataCopiedToTemp => self.write_compact_operation(CopyIndexToTemp),
-                CopyIndexToTemp => self.write_compact_operation(IndexCopiedToTemp),
-                IndexCopiedToTemp => self.write_compact_operation(ReplaceDataTemp),
-                ReplaceDataTemp => self.write_compact_operation(DataTempReplaced),
-                DataTempReplaced => self.write_compact_operation(ReplaceIndexTemp),
-                ReplaceIndexTemp => self.write_compact_operation(IndexTempReplaced),
-                IndexTempReplaced => self.clear_wal_compact(),
+                CreateDataTemp => self.write_compact_operation(CreateIndexTemp),
+                CreateIndexTemp => self.write_compact_operation(CopyDataToTemp),
+                CopyDataToTemp => self.write_compact_operation(CopyIndexToTemp),
+                CopyIndexToTemp => self.write_compact_operation(ReplaceDataTemp),
+                ReplaceDataTemp => self.write_compact_operation(ReplaceIndexTemp),
+                ReplaceIndexTemp => self.clear_wal_compact()
             }
         }
 
@@ -265,17 +241,11 @@ mod tests {
     fn test_every_enum_to_and_from_bytes() {
         let all_operations = vec![
             (CreateDataTemp, 1),
-            (DataTempCreated, 2),
-            (CreateIndexTemp, 3),
-            (IndexTempCreated, 4),
-            (CopyDataToTemp, 5),
-            (DataCopiedToTemp, 6),
-            (CopyIndexToTemp, 7),
-            (IndexCopiedToTemp, 8),
-            (ReplaceDataTemp, 9),
-            (DataTempReplaced, 10),
-            (ReplaceIndexTemp, 11),
-            (IndexTempReplaced, 12),
+            (CreateIndexTemp, 2),
+            (CopyDataToTemp, 3),
+            (CopyIndexToTemp, 4),
+            (ReplaceDataTemp, 5),
+            (ReplaceIndexTemp, 6),
         ];
 
         for (op, expected_byte) in all_operations {
@@ -316,9 +286,9 @@ mod tests {
         let mut wal = TestWal { compact_file: file };
 
         let operations = vec![
-            CreateDataTemp, DataTempCreated, CreateIndexTemp, IndexTempCreated,
-            CopyDataToTemp, DataCopiedToTemp, CopyIndexToTemp, IndexCopiedToTemp,
-            ReplaceDataTemp, DataTempReplaced, ReplaceIndexTemp, IndexTempReplaced,
+            CreateDataTemp,  CreateIndexTemp,
+            CopyDataToTemp, CopyIndexToTemp,
+            ReplaceDataTemp, ReplaceIndexTemp,
         ];
 
         for op in operations {
@@ -350,17 +320,11 @@ mod tests {
 
         // Matrix map representing transition rules: (CurrentState -> ExpectedNextState)
         let transition_matrix = vec![
-            (CreateDataTemp, DataTempCreated),
-            (DataTempCreated, CreateIndexTemp),
-            (CreateIndexTemp, IndexTempCreated),
-            (IndexTempCreated, CopyDataToTemp),
-            (CopyDataToTemp, DataCopiedToTemp),
-            (DataCopiedToTemp, CopyIndexToTemp),
-            (CopyIndexToTemp, IndexCopiedToTemp),
-            (IndexCopiedToTemp, ReplaceDataTemp),
-            (ReplaceDataTemp, DataTempReplaced),
-            (DataTempReplaced, ReplaceIndexTemp),
-            (ReplaceIndexTemp, IndexTempReplaced),
+            (CreateDataTemp, CreateIndexTemp),
+            (CreateIndexTemp, CopyDataToTemp),
+            (CopyDataToTemp, CopyIndexToTemp),
+            (CopyIndexToTemp, ReplaceDataTemp),
+            (ReplaceDataTemp, ReplaceIndexTemp),
         ];
 
         for (current, expected_next) in transition_matrix {
@@ -388,12 +352,12 @@ mod tests {
         let mut wal = TestWal { compact_file: file };
 
         // Put down initial boilerplate layout data into file beforehand
-        wal.write_compact_operation(IndexTempReplaced).unwrap();
+        wal.write_compact_operation(ReplaceIndexTemp).unwrap();
         let initial_meta = std::fs::metadata(&path).unwrap();
         assert_eq!(initial_meta.len(), 1);
 
         // Advancing from final state invokes truncation rules
-        wal.advance_to_next_step(IndexTempReplaced).unwrap();
+        wal.advance_to_next_step(ReplaceIndexTemp).unwrap();
 
         // Verify the file footprint was truncated down to 0 bytes completely
         let final_meta = std::fs::metadata(&path).unwrap();

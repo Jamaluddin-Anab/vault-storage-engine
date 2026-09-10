@@ -2,11 +2,12 @@ use crate::error::AppError;
 use crate::storage::index::Index;
 use crate::storage::recovery::Recovery;
 use crate::storage::storage_engine::ReadStatus::{CompleteRead, CorruptTail, Eof};
-use crate::storage::wal::{Operation, Wal};
+use crate::storage::wal::{CompactOperation, Operation, Wal};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use crate::storage::wal::CompactOperation::{CopyDataToTemp, CopyIndexToTemp, CreateDataTemp, CreateIndexTemp, ReplaceDataTemp, ReplaceIndexTemp};
 
 pub(crate) struct StorageEngine {
     pub(super) file: File,
@@ -131,6 +132,8 @@ impl StorageEngine {
     }
 
     pub(crate) fn compact(&mut self) -> Result<(), AppError> {
+
+        self.wal.write_compact_operation(CreateDataTemp)?;
         let mut data_temp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -139,6 +142,7 @@ impl StorageEngine {
             .open("data.temp.db")
             .map_err(AppError::LoadTempDbFile)?;
 
+        self.wal.write_compact_operation(CreateIndexTemp)?;
         let mut index_temp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -149,6 +153,7 @@ impl StorageEngine {
 
         let mut compact_offset = HashMap::<String, u64>::new();
 
+        self.wal.write_compact_operation(CopyDataToTemp)?;
         for (key, old_offset) in &self.index.index {
             self.file
                 .seek(SeekFrom::Start(*old_offset))
@@ -192,8 +197,9 @@ impl StorageEngine {
                 .map_err(AppError::WriteToTempDb)?;
             compact_offset.insert(key.clone(), new_offset);
         }
-        data_temp.flush().map_err(AppError::WriteToTempDb)?;
+        data_temp.sync_all().map_err(AppError::WriteToTempDb)?;
 
+        self.wal.write_compact_operation(CopyIndexToTemp)?;
         for (key, offset) in &compact_offset {
             let key_len = key.len() as u32;
             let record = [
@@ -206,13 +212,16 @@ impl StorageEngine {
                 .write_all(&record)
                 .map_err(AppError::WriteToTempIndex)?;
         }
-        index_temp.flush().map_err(AppError::WriteToTempIndex)?;
+        index_temp.sync_all().map_err(AppError::WriteToTempIndex)?;
 
         drop(index_temp);
         drop(data_temp);
 
+        self.wal.write_compact_operation(ReplaceDataTemp)?;
         std::fs::rename("data.temp.db", "data.db").map_err(AppError::ReplaceDbFile)?;
+        self.wal.write_compact_operation(ReplaceIndexTemp)?;
         std::fs::rename("index.temp.db", "index.db").map_err(AppError::ReplaceIndexFile)?;
+        self.wal.clear_wal_compact()?;
 
         self.file = OpenOptions::new()
             .read(true)
