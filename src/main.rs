@@ -7,7 +7,9 @@ mod cli;
 mod config;
 mod error;
 mod logging;
+mod recovery;
 mod storage;
+mod wal;
 
 fn main() {
     let args = Args::parse();

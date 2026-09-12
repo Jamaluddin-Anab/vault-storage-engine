@@ -1,32 +1,34 @@
 use crate::error::AppError;
+use crate::recovery::rec::Recovery;
 use crate::storage::index::Index;
-use crate::storage::recovery::Recovery;
 use crate::storage::storage_engine::ReadStatus::{CompleteRead, CorruptTail, Eof};
-use crate::storage::wal::{CompactOperation, Operation, Wal};
+use crate::wal::compact_wal::CompactOperation::*;
+use crate::wal::compact_wal::CompactWal;
+use crate::wal::put_wal::{Operation, PutWal};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use crate::storage::wal::CompactOperation::{CopyDataToTemp, CopyIndexToTemp, CreateDataTemp, CreateIndexTemp, ReplaceDataTemp, ReplaceIndexTemp};
 
 pub(crate) struct StorageEngine {
     pub(super) file: File,
     pub(super) index: Index,
-    pub(super) wal: Wal,
+    pub(super) put_wal: PutWal,
+    pub(super) compact_wal: CompactWal,
 }
 
-pub(super) enum ReadStatus {
+pub(crate) enum ReadStatus {
     Eof,
     CompleteRead(u64),
     CorruptTail,
 }
 
 impl StorageEngine {
-    pub(super) const KEY_LEN: u64 = 256;
-    pub(super) const VALUE_LEN: u64 = 1024 * 1024;
+    pub(crate) const KEY_LEN: u64 = 256;
+    pub(crate) const VALUE_LEN: u64 = 1024 * 1024;
 
     pub(crate) fn start() -> Result<StorageEngine, AppError> {
-        Recovery::start()?.recovery()?;
+        Recovery::start()?;
 
         let file = OpenOptions::new()
             .write(true)
@@ -37,9 +39,15 @@ impl StorageEngine {
             .map_err(AppError::LoadDbFile)?;
 
         let index = Index::load_index()?;
-        let wal = Wal::new()?;
+        let put_wal = PutWal::new()?;
+        let compact_wal = CompactWal::new()?;
 
-        Ok(StorageEngine { file, index, wal })
+        Ok(StorageEngine {
+            file,
+            index,
+            put_wal,
+            compact_wal,
+        })
     }
 
     pub(crate) fn put(&mut self, key: String, value: String) -> Result<(), AppError> {
@@ -55,8 +63,8 @@ impl StorageEngine {
             .seek(SeekFrom::End(0))
             .map_err(AppError::SeekInDb)?;
 
-        self.wal
-            .write_put_wal(Operation::WriteInDb, key.as_str(), value.as_str(), offset)?;
+        self.put_wal
+            .write(Operation::WriteInDb, key.as_str(), value.as_str(), offset)?;
 
         let key_len = key.len() as u32;
         let value_len = value.len() as u32;
@@ -72,11 +80,11 @@ impl StorageEngine {
         self.file.write_all(&record).map_err(AppError::WriteToDb)?;
         self.file.sync_all().map_err(AppError::WriteToDb)?;
 
-        self.wal.mark_write_index()?;
+        self.put_wal.mark_write_index()?;
 
         self.index.put(key, offset)?;
 
-        self.wal.clear_wal_put()?;
+        self.put_wal.clear()?;
 
         Ok(())
     }
@@ -121,7 +129,7 @@ impl StorageEngine {
         Ok(None)
     }
 
-    pub(super) fn rebuild_len(file: &mut File) -> Result<ReadStatus, AppError> {
+    pub(crate) fn rebuild_len(file: &mut File) -> Result<ReadStatus, AppError> {
         let mut buf = [0u8; 4];
         match file.read(&mut buf) {
             Ok(0) => Ok(Eof), // clean end of file
@@ -132,8 +140,7 @@ impl StorageEngine {
     }
 
     pub(crate) fn compact(&mut self) -> Result<(), AppError> {
-
-        self.wal.write_compact_operation(CreateDataTemp)?;
+        self.compact_wal.write_operation(CreateData)?;
         let mut data_temp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -142,7 +149,7 @@ impl StorageEngine {
             .open("data.temp.db")
             .map_err(AppError::LoadTempDbFile)?;
 
-        self.wal.write_compact_operation(CreateIndexTemp)?;
+        self.compact_wal.write_operation(CreateIndex)?;
         let mut index_temp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -153,7 +160,7 @@ impl StorageEngine {
 
         let mut compact_offset = HashMap::<String, u64>::new();
 
-        self.wal.write_compact_operation(CopyDataToTemp)?;
+        self.compact_wal.write_operation(CopyDataTo)?;
         for (key, old_offset) in &self.index.index {
             self.file
                 .seek(SeekFrom::Start(*old_offset))
@@ -199,7 +206,7 @@ impl StorageEngine {
         }
         data_temp.sync_all().map_err(AppError::WriteToTempDb)?;
 
-        self.wal.write_compact_operation(CopyIndexToTemp)?;
+        self.compact_wal.write_operation(CopyIndexTo)?;
         for (key, offset) in &compact_offset {
             let key_len = key.len() as u32;
             let record = [
@@ -217,11 +224,11 @@ impl StorageEngine {
         drop(index_temp);
         drop(data_temp);
 
-        self.wal.write_compact_operation(ReplaceDataTemp)?;
+        self.compact_wal.write_operation(ReplaceData)?;
         std::fs::rename("data.temp.db", "data.db").map_err(AppError::ReplaceDbFile)?;
-        self.wal.write_compact_operation(ReplaceIndexTemp)?;
+        self.compact_wal.write_operation(ReplaceIndex)?;
         std::fs::rename("index.temp.db", "index.db").map_err(AppError::ReplaceIndexFile)?;
-        self.wal.clear_wal_compact()?;
+        self.compact_wal.clear_wal_compact()?;
 
         self.file = OpenOptions::new()
             .read(true)

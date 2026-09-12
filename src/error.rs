@@ -68,4 +68,10 @@ pub(crate) enum AppError {
     TruncateIndex(Error),
     #[error("unknown compact operation detected.")]
     UnknownCompactOperation,
+    #[error("key length not found.")]
+    KeyLenNotFound,
+    #[error("value length not found.")]
+    ValueLenNotFound,
+    #[error("offset can not read: {0}")]
+    ReadOffset(Error),
 }

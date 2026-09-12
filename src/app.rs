@@ -2,7 +2,7 @@ use crate::cli::{Args, Commands};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::logging::Logging;
-use crate::storage::recovery::Recovery;
+use crate::recovery::rec::Recovery;
 use crate::storage::storage_engine::StorageEngine;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -31,7 +31,7 @@ impl App {
                     StorageEngine::start()?.compact()?;
                 }
                 Commands::Recovery => {
-                    Recovery::start()?.recovery()?;
+                    Recovery::start()?;
                 }
             }
         }

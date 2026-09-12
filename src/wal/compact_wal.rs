@@ -1,169 +1,97 @@
+#![allow(dead_code)]
+
 use crate::error::AppError;
-use crate::storage::wal::CompactOperation::{
-    CopyDataToTemp, CopyIndexToTemp, CreateDataTemp, CreateIndexTemp,
-    ReplaceDataTemp, ReplaceIndexTemp,
-};
+use crate::wal::compact_wal::CompactOperation::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
-pub(super) enum Operation {
-    WriteInDb = 1,
-    WriteInIndex = 2,
+pub(crate) enum CompactOperation {
+    CreateData = 1,
+    CreateIndex = 2,
+    CopyDataTo = 3,
+    CopyIndexTo = 4,
+    ReplaceData = 5,
+    ReplaceIndex = 6,
 }
-impl Operation {
-    pub(super) fn to_bytes(self) -> [u8; 1] {
-        [self as u8]
-    }
-}
-
-#[repr(u8)]
-#[derive(Copy, Clone, Debug)]
-pub(super) enum CompactOperation {
-    CreateDataTemp = 1,
-    CreateIndexTemp = 2,
-    CopyDataToTemp = 3,
-    CopyIndexToTemp = 4,
-    ReplaceDataTemp = 5,
-    ReplaceIndexTemp = 6,
-}
-
 impl CompactOperation {
-    pub(super) fn to_bytes(self) -> [u8; 1] {
+    pub(crate) fn to_bytes(self) -> [u8; 1] {
         [self as u8]
     }
 
-    pub(super) fn from_bytes(bytes: [u8; 1]) -> Result<Self, AppError> {
+    pub(crate) fn from_bytes(bytes: [u8; 1]) -> Result<Self, AppError> {
         match bytes[0] {
-            1 => Ok(CreateDataTemp),
-            2 => Ok(CreateIndexTemp),
-            3 => Ok(CopyDataToTemp),
-            4 => Ok(CopyIndexToTemp),
-            5 => Ok(ReplaceDataTemp),
-            6 => Ok(ReplaceIndexTemp),
+            1 => Ok(CreateData),
+            2 => Ok(CreateIndex),
+            3 => Ok(CopyDataTo),
+            4 => Ok(CopyIndexTo),
+            5 => Ok(ReplaceData),
+            6 => Ok(ReplaceIndex),
             _ => Err(AppError::UnknownCompactOperation),
         }
     }
 }
 
-pub(super) struct Wal {
-    pub(super) put_file: File,
-    pub(super) compact_file: File,
+pub(crate) struct CompactWal {
+    pub(crate) file: File,
 }
-
-impl Wal {
-    pub(super) fn new() -> Result<Wal, AppError> {
-        let put_file = Self::create_file("put.wal")?;
-        let compact_file = Self::create_file("compact.wal")?;
-        Ok(Wal {
-            put_file,
-            compact_file,
-        })
+impl CompactWal {
+    pub(crate) fn new() -> Result<Self, AppError> {
+        let file = Self::create_compact_file()?;
+        Ok(CompactWal { file })
     }
 
-    fn create_file(file_name: &str) -> Result<File, AppError> {
+    fn create_compact_file() -> Result<File, AppError> {
         OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(Path::new(file_name))
+            .open(Path::new("compact.wal"))
             .map_err(AppError::CreateWalFile)
     }
 
-    pub(super) fn write_put_wal(
-        &mut self,
-        operation: Operation,
-        key: &str,
-        value: &str,
-        offset: u64,
-    ) -> Result<(), AppError> {
-        let key_len = key.len() as u32;
-        let value_len = value.len() as u32;
-        let record = [
-            operation.to_bytes().as_slice(),
-            key_len.to_le_bytes().as_slice(),
-            value_len.to_le_bytes().as_slice(),
-            key.as_bytes(),
-            value.as_bytes(),
-            &offset.to_le_bytes(),
-        ]
-        .concat();
-
-        self.put_file
-            .write_all(&record)
-            .map_err(AppError::WriteToWal)?;
-        self.put_file.sync_all().map_err(AppError::WriteToWal)?;
-        Ok(())
-    }
-
-    pub(crate) fn mark_write_index(&mut self) -> Result<(), AppError> {
-        self.put_file
-            .seek(SeekFrom::Start(0))
-            .map_err(AppError::SeekInWal)?;
-        self.put_file
-            .write_all(Operation::WriteInIndex.to_bytes().as_slice())
-            .map_err(AppError::WriteToWal)?;
-        self.put_file.sync_all().map_err(AppError::WriteToWal)?;
-        Ok(())
-    }
-
-    pub(super) fn clear_wal_put(&mut self) -> Result<(), AppError> {
-        self.put_file.set_len(0).map_err(AppError::CleanWalFile)?;
-        self.put_file
-            .seek(SeekFrom::Start(0))
-            .map_err(AppError::SeekInWal)?;
-        Ok(())
-    }
-
-    pub(super) fn write_compact_operation(
+    pub(crate) fn write_operation(
         &mut self,
         compact_operation: CompactOperation,
     ) -> Result<(), AppError> {
+        self.file.set_len(0).map_err(AppError::CleanWalFile)?;
 
-        self.compact_file
-            .set_len(0)
-            .map_err(AppError::CleanWalFile)?;
-
-        self.compact_file
+        self.file
             .seek(SeekFrom::Start(0))
             .map_err(AppError::SeekInWal)?;
 
-        self.compact_file
+        self.file
             .write_all(&compact_operation.to_bytes())
             .map_err(AppError::WriteToWal)?;
 
-        self.compact_file
-            .sync_all()
-            .map_err(AppError::WriteToWal)?;
+        self.file.sync_all().map_err(AppError::WriteToWal)?;
 
         Ok(())
     }
 
-    pub(super) fn advance_to_next_step(&mut self, compact_operation: CompactOperation) -> Result<(), AppError> {
-
+    pub(crate) fn advance_to_next_step(
+        &mut self,
+        compact_operation: CompactOperation,
+    ) -> Result<(), AppError> {
         match compact_operation {
-            CreateDataTemp => self.write_compact_operation(CreateIndexTemp),
-            CreateIndexTemp => self.write_compact_operation(CopyDataToTemp),
-            CopyDataToTemp => self.write_compact_operation(CopyIndexToTemp),
-            CopyIndexToTemp => self.write_compact_operation(ReplaceDataTemp),
-            ReplaceDataTemp => self.write_compact_operation(ReplaceIndexTemp),
-            ReplaceIndexTemp => self.clear_wal_compact()
+            CreateData => self.write_operation(CreateIndex),
+            CreateIndex => self.write_operation(CopyDataTo),
+            CopyDataTo => self.write_operation(CopyIndexTo),
+            CopyIndexTo => self.write_operation(ReplaceData),
+            ReplaceData => self.write_operation(ReplaceIndex),
+            ReplaceIndex => self.clear_wal_compact(),
         }
     }
 
-    pub(super) fn clear_wal_compact(&mut self) -> Result<(), AppError> {
-        self.compact_file
-            .set_len(0)
-            .map_err(AppError::CleanWalFile)?;
+    pub(crate) fn clear_wal_compact(&mut self) -> Result<(), AppError> {
+        self.file.set_len(0).map_err(AppError::CleanWalFile)?;
 
-        self.compact_file
-            .sync_all()
-            .map_err(AppError::CleanWalFile)?;
+        self.file.sync_all().map_err(AppError::CleanWalFile)?;
 
-        self.compact_file
+        self.file
             .seek(SeekFrom::Start(0))
             .map_err(AppError::SeekInWal)?;
 
@@ -180,7 +108,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Import variants to prevent repetitive prefix nesting
-    use CompactOperation::*;
 
     // Generates a isolated temporary file path unique to each thread execution
     fn get_temp_wal_path() -> PathBuf {
@@ -207,28 +134,40 @@ mod tests {
 
     impl TestWal {
         fn write_compact_operation(&mut self, op: CompactOperation) -> Result<(), AppError> {
-            self.compact_file.set_len(0).map_err(AppError::CleanWalFile)?;
-            self.compact_file.seek(SeekFrom::Start(0)).map_err(AppError::SeekInWal)?;
-            self.compact_file.write_all(&op.to_bytes()).map_err(AppError::WriteToWal)?;
+            self.compact_file
+                .set_len(0)
+                .map_err(AppError::CleanWalFile)?;
+            self.compact_file
+                .seek(SeekFrom::Start(0))
+                .map_err(AppError::SeekInWal)?;
+            self.compact_file
+                .write_all(&op.to_bytes())
+                .map_err(AppError::WriteToWal)?;
             self.compact_file.sync_all().map_err(AppError::WriteToWal)?;
             Ok(())
         }
 
         fn advance_to_next_step(&mut self, op: CompactOperation) -> Result<(), AppError> {
             match op {
-                CreateDataTemp => self.write_compact_operation(CreateIndexTemp),
-                CreateIndexTemp => self.write_compact_operation(CopyDataToTemp),
-                CopyDataToTemp => self.write_compact_operation(CopyIndexToTemp),
-                CopyIndexToTemp => self.write_compact_operation(ReplaceDataTemp),
-                ReplaceDataTemp => self.write_compact_operation(ReplaceIndexTemp),
-                ReplaceIndexTemp => self.clear_wal_compact()
+                CreateData => self.write_compact_operation(CreateIndex),
+                CreateIndex => self.write_compact_operation(CopyDataTo),
+                CopyDataTo => self.write_compact_operation(CopyIndexTo),
+                CopyIndexTo => self.write_compact_operation(ReplaceData),
+                ReplaceData => self.write_compact_operation(ReplaceIndex),
+                ReplaceIndex => self.clear_wal_compact(),
             }
         }
 
         fn clear_wal_compact(&mut self) -> Result<(), AppError> {
-            self.compact_file.set_len(0).map_err(AppError::CleanWalFile)?;
-            self.compact_file.sync_all().map_err(AppError::CleanWalFile)?;
-            self.compact_file.seek(SeekFrom::Start(0)).map_err(AppError::SeekInWal)?;
+            self.compact_file
+                .set_len(0)
+                .map_err(AppError::CleanWalFile)?;
+            self.compact_file
+                .sync_all()
+                .map_err(AppError::CleanWalFile)?;
+            self.compact_file
+                .seek(SeekFrom::Start(0))
+                .map_err(AppError::SeekInWal)?;
             Ok(())
         }
     }
@@ -240,22 +179,29 @@ mod tests {
     #[test]
     fn test_every_enum_to_and_from_bytes() {
         let all_operations = vec![
-            (CreateDataTemp, 1),
-            (CreateIndexTemp, 2),
-            (CopyDataToTemp, 3),
-            (CopyIndexToTemp, 4),
-            (ReplaceDataTemp, 5),
-            (ReplaceIndexTemp, 6),
+            (CreateData, 1),
+            (CreateIndex, 2),
+            (CopyDataTo, 3),
+            (CopyIndexTo, 4),
+            (ReplaceData, 5),
+            (ReplaceIndex, 6),
         ];
 
         for (op, expected_byte) in all_operations {
             // Test Forward Conversion: Enum -> Bytes
             let bytes = op.to_bytes();
-            assert_eq!(bytes[0], expected_byte, "Failed mapping serialization for {:?}", op);
+            assert_eq!(
+                bytes[0], expected_byte,
+                "Failed mapping serialization for {:?}",
+                op
+            );
 
             // Test Reverse Conversion: Bytes -> Enum
             let decoded = CompactOperation::from_bytes(bytes).unwrap();
-            assert!(matches!(decoded, _op), "Failed deserialization matching criteria");
+            assert!(
+                matches!(decoded, _op),
+                "Failed deserialization matching criteria"
+            );
         }
     }
 
@@ -286,9 +232,12 @@ mod tests {
         let mut wal = TestWal { compact_file: file };
 
         let operations = vec![
-            CreateDataTemp,  CreateIndexTemp,
-            CopyDataToTemp, CopyIndexToTemp,
-            ReplaceDataTemp, ReplaceIndexTemp,
+            CreateData,
+            CreateIndex,
+            CopyDataTo,
+            CopyIndexTo,
+            ReplaceData,
+            ReplaceIndex,
         ];
 
         for op in operations {
@@ -296,7 +245,12 @@ mod tests {
 
             // Check metadata sizing directly from disk
             let metadata = std::fs::metadata(&path).unwrap();
-            assert_eq!(metadata.len(), 1, "Operation {:?} must write exactly 1 byte to file", op);
+            assert_eq!(
+                metadata.len(),
+                1,
+                "Operation {:?} must write exactly 1 byte to file",
+                op
+            );
 
             // Read back and check inner byte alignment values
             let mut read_buf = [0u8; 1];
@@ -320,11 +274,11 @@ mod tests {
 
         // Matrix map representing transition rules: (CurrentState -> ExpectedNextState)
         let transition_matrix = vec![
-            (CreateDataTemp, CreateIndexTemp),
-            (CreateIndexTemp, CopyDataToTemp),
-            (CopyDataToTemp, CopyIndexToTemp),
-            (CopyIndexToTemp, ReplaceDataTemp),
-            (ReplaceDataTemp, ReplaceIndexTemp),
+            (CreateData, CreateIndex),
+            (CreateIndex, CopyDataTo),
+            (CopyDataTo, CopyIndexTo),
+            (CopyIndexTo, ReplaceData),
+            (ReplaceData, ReplaceIndex),
         ];
 
         for (current, expected_next) in transition_matrix {
@@ -338,7 +292,9 @@ mod tests {
             assert_eq!(
                 read_buf,
                 expected_next.to_bytes(),
-                "Advancing from {:?} did not yield expected state {:?}", current, expected_next
+                "Advancing from {:?} did not yield expected state {:?}",
+                current,
+                expected_next
             );
         }
 
@@ -352,16 +308,20 @@ mod tests {
         let mut wal = TestWal { compact_file: file };
 
         // Put down initial boilerplate layout data into file beforehand
-        wal.write_compact_operation(ReplaceIndexTemp).unwrap();
+        wal.write_compact_operation(ReplaceIndex).unwrap();
         let initial_meta = std::fs::metadata(&path).unwrap();
         assert_eq!(initial_meta.len(), 1);
 
         // Advancing from final state invokes truncation rules
-        wal.advance_to_next_step(ReplaceIndexTemp).unwrap();
+        wal.advance_to_next_step(ReplaceIndex).unwrap();
 
         // Verify the file footprint was truncated down to 0 bytes completely
         let final_meta = std::fs::metadata(&path).unwrap();
-        assert_eq!(final_meta.len(), 0, "WAL payload footprint must be completely zeroed out");
+        assert_eq!(
+            final_meta.len(),
+            0,
+            "WAL payload footprint must be completely zeroed out"
+        );
 
         // Verify seek pointer position resets safely to zero boundary constraints
         let pointer_pos = wal.compact_file.stream_position().unwrap();
@@ -370,5 +330,3 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
-
-

@@ -3,7 +3,8 @@ mod test {
     use crate::error::AppError;
     use crate::storage::index::Index;
     use crate::storage::storage_engine::StorageEngine;
-    use crate::storage::wal::Wal;
+    use crate::wal::compact_wal::CompactWal;
+    use crate::wal::put_wal::PutWal;
     use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::io::{Seek, SeekFrom, Write};
@@ -73,12 +74,15 @@ mod test {
             file: index_file,
             index: HashMap::<String, u64>::new(),
         };
-        let wal = Wal {
-            put_file,
-            compact_file,
-        };
+        let put_wal = PutWal { file: put_file };
+        let compact_wal = CompactWal { file: compact_file };
 
-        StorageEngine { file, index, wal }
+        StorageEngine {
+            file,
+            index,
+            put_wal,
+            compact_wal,
+        }
     }
 
     #[test]
