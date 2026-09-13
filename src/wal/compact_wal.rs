@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::AppError;
 use crate::wal::compact_wal::CompactOperation::*;
 use std::fs::{File, OpenOptions};
@@ -7,7 +5,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompactOperation {
     CreateData = 1,
     CreateIndex = 2,
@@ -70,20 +68,6 @@ impl CompactWal {
         self.file.sync_all().map_err(AppError::WriteToWal)?;
 
         Ok(())
-    }
-
-    pub(crate) fn advance_to_next_step(
-        &mut self,
-        compact_operation: CompactOperation,
-    ) -> Result<(), AppError> {
-        match compact_operation {
-            CreateData => self.write_operation(CreateIndex),
-            CreateIndex => self.write_operation(CopyDataTo),
-            CopyDataTo => self.write_operation(CopyIndexTo),
-            CopyIndexTo => self.write_operation(ReplaceData),
-            ReplaceData => self.write_operation(ReplaceIndex),
-            ReplaceIndex => self.clear_wal_compact(),
-        }
     }
 
     pub(crate) fn clear_wal_compact(&mut self) -> Result<(), AppError> {
@@ -198,10 +182,7 @@ mod tests {
 
             // Test Reverse Conversion: Bytes -> Enum
             let decoded = CompactOperation::from_bytes(bytes).unwrap();
-            assert!(
-                matches!(decoded, _op),
-                "Failed deserialization matching criteria"
-            );
+            assert_eq!(decoded, op);
         }
     }
 

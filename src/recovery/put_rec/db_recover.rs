@@ -44,7 +44,7 @@ impl<'a> DbRecovery<'a> {
             return self.write_in_db(wal_record, &mut db_file);
         }
 
-        let value = match self.read_value(&mut db_file, key_len) {
+        let value = match self.read_value(&mut db_file, value_len) {
             Ok(value) => value,
             Err(_) => return self.write_in_db(wal_record, &mut db_file),
         };
@@ -121,3 +121,4 @@ impl<'a> DbRecovery<'a> {
         self.put_recovery.mark_write_db(wal_record)
     }
 }
+

@@ -10,36 +10,37 @@ use std::path::Path;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
-enum Operation {
+pub(super) enum Operation {
     WriteInDb = 1,
     WriteInIndex = 2,
-}
-enum ReadOperationStatus {
-    Eof,
-    CompleteRead(Operation),
-    InterruptedFile,
 }
 impl Operation {
     pub(crate) fn to_bytes(self) -> [u8; 1] {
         [self as u8]
     }
 }
+enum ReadOperationStatus {
+    Eof,
+    CompleteRead(Operation),
+    InterruptedFile,
+}
 
 #[derive(Debug)]
 pub(super) struct WalRecord {
-    operation: Operation,
+    pub(super) operation: Operation,
     pub(super) key: String,
     pub(super) value: String,
     pub(super) offset: u64,
 }
+
 #[derive(Debug)]
-enum ReadFileStatus {
+pub(super) enum ReadFileStatus {
     EndOfFile,
     Record(WalRecord),
 }
 
 pub(crate) struct PutRecovery {
-    put_file: File,
+    pub(super) put_file: File,
 }
 impl PutRecovery {
     pub(crate) fn start() -> Result<PutRecovery, AppError> {
@@ -65,7 +66,7 @@ impl PutRecovery {
         }
     }
 
-    fn read_put_wal(&mut self) -> Result<ReadFileStatus, AppError> {
+    pub(super) fn read_put_wal(&mut self) -> Result<ReadFileStatus, AppError> {
         let operation = match self.read_operation()? {
             ReadOperationStatus::Eof => return Ok(EndOfFile),
             ReadOperationStatus::CompleteRead(operation) => operation,
