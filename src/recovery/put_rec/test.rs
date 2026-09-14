@@ -1,12 +1,11 @@
-
 #[cfg(test)]
 mod test_put_recovery {
+    use crate::error::AppError;
+    use crate::recovery::put_rec::put_recovery::{Operation, PutRecovery, ReadFileStatus};
     use std::fs::OpenOptions;
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use crate::error::AppError;
-    use crate::recovery::put_rec::put_recovery::{Operation, PutRecovery, ReadFileStatus};
 
     fn get_temp_wal_path() -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -221,10 +220,12 @@ mod test_put_recovery {
 
 #[cfg(test)]
 mod test_db_recovery {
+    use crate::recovery::put_rec::db_recover::DbRecovery;
+    use crate::recovery::put_rec::put_recovery::{
+        Operation, PutRecovery, ReadFileStatus, WalRecord,
+    };
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
-    use crate::recovery::put_rec::db_recover::DbRecovery;
-    use crate::recovery::put_rec::put_recovery::{Operation, PutRecovery, ReadFileStatus, WalRecord};
 
     fn setup_test_wal_record(op: Operation, key: &str, val: &str, offset: u64) -> WalRecord {
         WalRecord {
@@ -287,7 +288,7 @@ mod test_db_recovery {
             b"missing_key",
             b"some_value",
         ]
-            .concat();
+        .concat();
         assert_eq!(db_buf, expected_record);
 
         // 2. Verify state transition updated index.db and cleared put.wal
@@ -344,15 +345,14 @@ mod test_db_recovery {
         assert!(std::fs::metadata("index.db").unwrap().len() > 0);
         teardown_files();
     }
-
 }
 
 #[cfg(test)]
 mod test_index_recovery {
-    use std::fs::{File, OpenOptions};
-    use std::io::{Read, Write};
     use crate::recovery::put_rec::index_recovery::IndexRecovery;
     use crate::recovery::put_rec::put_recovery::{Operation, PutRecovery, WalRecord};
+    use std::fs::{File, OpenOptions};
+    use std::io::{Read, Write};
 
     fn setup_test_wal_record_ind(op: Operation, key: &str, val: &str, offset: u64) -> WalRecord {
         WalRecord {
@@ -400,7 +400,7 @@ mod test_index_recovery {
             b"new_index_key",
             (500u64).to_le_bytes().as_slice(),
         ]
-            .concat();
+        .concat();
         assert_eq!(idx_buf, expected_idx);
         assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
         teardown_files_ind();
@@ -413,7 +413,8 @@ mod test_index_recovery {
         let mut ind_rec = IndexRecovery::start(&mut put_rec);
 
         let target_key = "stable_key";
-        let wal_record = setup_test_wal_record_ind(Operation::WriteInIndex, target_key, "val", 1024);
+        let wal_record =
+            setup_test_wal_record_ind(Operation::WriteInIndex, target_key, "val", 1024);
 
         idx.write_all(&(target_key.len() as u32).to_le_bytes())
             .unwrap();
@@ -433,7 +434,8 @@ mod test_index_recovery {
         let mut ind_rec = IndexRecovery::start(&mut put_rec);
 
         let target_key = "migrated_key";
-        let wal_record = setup_test_wal_record_ind(Operation::WriteInIndex, target_key, "val", 9999);
+        let wal_record =
+            setup_test_wal_record_ind(Operation::WriteInIndex, target_key, "val", 9999);
 
         // Write index pointing to outdated old offset (e.g. 1111)
         idx.write_all(&(target_key.len() as u32).to_le_bytes())
@@ -452,7 +454,8 @@ mod test_index_recovery {
         let mut idx = clean_and_create_file_ind("index.db");
         let mut put_rec = PutRecovery::start().unwrap();
         let mut ind_rec = IndexRecovery::start(&mut put_rec);
-        let wal_record = setup_test_wal_record_ind(Operation::WriteInIndex, "broken_index", "val", 45);
+        let wal_record =
+            setup_test_wal_record_ind(Operation::WriteInIndex, "broken_index", "val", 45);
 
         idx.write_all(&200u32.to_le_bytes()).unwrap(); // Corrupt boundary
         idx.flush().unwrap();
@@ -467,7 +470,8 @@ mod test_index_recovery {
         let mut idx = clean_and_create_file_ind("index.db");
         let mut put_rec = PutRecovery::start().unwrap();
         let mut ind_rec = IndexRecovery::start(&mut put_rec);
-        let wal_record = setup_test_wal_record_ind(Operation::WriteInIndex, "bad_offset", "val", 88);
+        let wal_record =
+            setup_test_wal_record_ind(Operation::WriteInIndex, "bad_offset", "val", 88);
 
         idx.write_all(&10u32.to_le_bytes()).unwrap();
         idx.write_all(b"ten_bytes_").unwrap();
@@ -494,15 +498,13 @@ mod test_index_recovery {
         assert_eq!(std::fs::metadata("put.wal").unwrap().len(), 0);
         teardown_files_ind();
     }
-
 }
 
 #[cfg(test)]
-mod test_full_recovery
-{
+mod test_full_recovery {
+    use crate::recovery::put_rec::put_recovery::PutRecovery;
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
-    use crate::recovery::put_rec::put_recovery::PutRecovery;
 
     fn clean_and_create_file_ful(name: &str) -> File {
         OpenOptions::new()
@@ -621,4 +623,3 @@ mod test_full_recovery
         teardown_files_ful();
     }
 }
-

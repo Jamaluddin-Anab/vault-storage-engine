@@ -187,7 +187,7 @@ impl StorageEngine {
 
             let new_offset = data_temp
                 .stream_position()
-                .map_err(AppError::SeekInTempDb)?;
+                .map_err(AppError::SeekInWal)?;
             let key_len_u32 = key.len() as u32;
             let value_len_u32 = value_buf.len() as u32;
 

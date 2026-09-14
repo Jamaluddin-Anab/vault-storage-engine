@@ -121,4 +121,3 @@ impl<'a> DbRecovery<'a> {
         self.put_recovery.mark_write_db(wal_record)
     }
 }
-

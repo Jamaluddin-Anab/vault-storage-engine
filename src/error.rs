@@ -42,8 +42,6 @@ pub(crate) enum AppError {
     LoadTempDbFile(Error),
     #[error("can not write data to data.db.tmp file. {0}")]
     WriteToTempDb(Error),
-    #[error("can not seek inside data.temp.db file: {0}")]
-    SeekInTempDb(Error),
     #[error("can not replace .tmp file to .db file: {0}")]
     ReplaceDbFile(Error),
     #[error("can not write to TempIndex file: {0}")]
@@ -74,4 +72,8 @@ pub(crate) enum AppError {
     ValueLenNotFound,
     #[error("offset can not read: {0}")]
     ReadOffset(Error),
+    #[error("can not access file: {0}")]
+    FileAccess(Error),
+    #[error("can not create TempFile: {0}")]
+    CreateTempFile(Error),
 }

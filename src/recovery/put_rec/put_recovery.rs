@@ -93,7 +93,7 @@ impl PutRecovery {
                 _ => Err(AppError::CorruptedWal),
             },
             Ok(_) => Ok(ReadOperationStatus::InterruptedFile),
-            Err(_) => Err(AppError::CorruptedWal),
+            Err(err) => Err(AppError::ReadWalFile(err)),
         }
     }
 

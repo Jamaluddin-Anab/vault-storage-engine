@@ -46,7 +46,7 @@ impl CompactWal {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(false)
+            .truncate(true)
             .open(Path::new("compact.wal"))
             .map_err(AppError::CreateWalFile)
     }
