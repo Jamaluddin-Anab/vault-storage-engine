@@ -76,4 +76,8 @@ pub(crate) enum AppError {
     FileAccess(Error),
     #[error("can not create TempFile: {0}")]
     CreateTempFile(Error),
+    #[error("data.db file not found.")]
+    DbFileNotExist,
+    #[error("can not seek in .temp.db file: {0}")]
+    SeekInTemp(Error),
 }

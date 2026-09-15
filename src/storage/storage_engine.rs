@@ -185,9 +185,7 @@ impl StorageEngine {
                 .read_exact(&mut value_buf)
                 .map_err(|_| AppError::CorruptedDb)?;
 
-            let new_offset = data_temp
-                .stream_position()
-                .map_err(AppError::SeekInWal)?;
+            let new_offset = data_temp.stream_position().map_err(AppError::SeekInWal)?;
             let key_len_u32 = key.len() as u32;
             let value_len_u32 = value_buf.len() as u32;
 
@@ -206,7 +204,6 @@ impl StorageEngine {
         }
         data_temp.sync_all().map_err(AppError::WriteToTempDb)?;
 
-        self.compact_wal.write_operation(CopyIndexTo)?;
         for (key, offset) in &compact_offset {
             let key_len = key.len() as u32;
             let record = [

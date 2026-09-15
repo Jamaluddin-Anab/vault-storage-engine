@@ -6,15 +6,15 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-pub(super) struct Index {
+pub(crate) struct Index {
     pub(super) file: File,
-    pub(super) index: HashMap<String, u64>,
+    pub(crate) index: HashMap<String, u64>,
 }
 
 impl Index {
     const MAX_LEN: usize = 256;
 
-    pub(super) fn load_index() -> Result<Index, AppError> {
+    pub(crate) fn load_index() -> Result<Index, AppError> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)

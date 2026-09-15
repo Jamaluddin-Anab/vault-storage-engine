@@ -10,9 +10,8 @@ pub(crate) enum CompactOperation {
     CreateData = 1,
     CreateIndex = 2,
     CopyDataTo = 3,
-    CopyIndexTo = 4,
-    ReplaceData = 5,
-    ReplaceIndex = 6,
+    ReplaceData = 4,
+    ReplaceIndex = 5,
 }
 impl CompactOperation {
     pub(crate) fn to_bytes(self) -> [u8; 1] {
@@ -24,9 +23,8 @@ impl CompactOperation {
             1 => Ok(CreateData),
             2 => Ok(CreateIndex),
             3 => Ok(CopyDataTo),
-            4 => Ok(CopyIndexTo),
-            5 => Ok(ReplaceData),
-            6 => Ok(ReplaceIndex),
+            4 => Ok(ReplaceData),
+            5 => Ok(ReplaceIndex),
             _ => Err(AppError::UnknownCompactOperation),
         }
     }
@@ -135,8 +133,7 @@ mod tests {
             match op {
                 CreateData => self.write_compact_operation(CreateIndex),
                 CreateIndex => self.write_compact_operation(CopyDataTo),
-                CopyDataTo => self.write_compact_operation(CopyIndexTo),
-                CopyIndexTo => self.write_compact_operation(ReplaceData),
+                CopyDataTo => self.write_compact_operation(ReplaceData),
                 ReplaceData => self.write_compact_operation(ReplaceIndex),
                 ReplaceIndex => self.clear_wal_compact(),
             }
@@ -166,9 +163,8 @@ mod tests {
             (CreateData, 1),
             (CreateIndex, 2),
             (CopyDataTo, 3),
-            (CopyIndexTo, 4),
-            (ReplaceData, 5),
-            (ReplaceIndex, 6),
+            (ReplaceData, 4),
+            (ReplaceIndex, 5),
         ];
 
         for (op, expected_byte) in all_operations {
@@ -216,7 +212,6 @@ mod tests {
             CreateData,
             CreateIndex,
             CopyDataTo,
-            CopyIndexTo,
             ReplaceData,
             ReplaceIndex,
         ];
@@ -257,8 +252,7 @@ mod tests {
         let transition_matrix = vec![
             (CreateData, CreateIndex),
             (CreateIndex, CopyDataTo),
-            (CopyDataTo, CopyIndexTo),
-            (CopyIndexTo, ReplaceData),
+            (CopyDataTo, ReplaceData),
             (ReplaceData, ReplaceIndex),
         ];
 
