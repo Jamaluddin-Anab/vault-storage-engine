@@ -183,6 +183,17 @@ impl CompactRecovery {
         Ok(())
     }
 
+    fn replace_data(&mut self) -> Result<(), AppError> {
+        if !std::fs::exists(Path::new("data.db")).map_err(AppError::FileAccess)? {
+            return Err(AppError::DbFileNotExist);
+        }
+        if !std::fs::exists(Path::new("data.temp.db")).map_err(AppError::FileAccess)? {
+            self.copy_data_to()?;
+        }
+        std::fs::rename("data.temp.db", "data.db").map_err(AppError::ReplaceDbFile)?;
+        self.update_compact_wal(ReplaceIndex)
+    }
+
     fn update_compact_wal(&mut self, operation: CompactOperation) -> Result<(), AppError> {
         self.compact_file
             .set_len(0)
@@ -751,3 +762,167 @@ mod test_copy_data_to {
         teardown_all_files();
     }
 }
+
+#[cfg(test)]
+mod test_replace_data {
+    use super::*;
+    use std::fs::{File, OpenOptions};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::Path;
+
+    fn teardown_replace_files() {
+        let _ = std::fs::remove_file("data.db");
+        let _ = std::fs::remove_file("data.temp.db");
+        let _ = std::fs::remove_file("compact.wal");
+    }
+
+    fn setup_clean_wal() -> File {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("compact.wal")
+            .unwrap()
+    }
+
+    // ========================================================================== --
+    // TESTS SCENARIOS                                                            --
+    // ========================================================================== --
+
+    #[test]
+    fn test_replace_data_db_missing_returns_error_and_leaves_wal_unchanged() {
+        teardown_replace_files();
+
+        // 1. Arrange: Ensure data.db is missing, set initial WAL value to something else (e.g., 5)
+        let mut compact_file = setup_clean_wal();
+        compact_file.write_all(&[5u8]).unwrap();
+        compact_file.flush().unwrap();
+
+        {
+            let mut compactor = CompactRecovery {
+                compact_file,
+            };
+
+            // 2. Act: Call replace_data() -> Must error out
+            let res = compactor.replace_data();
+            assert!(matches!(res, Err(AppError::DbFileNotExist)));
+        }
+
+        // 3. Assert: Verify WAL operation remains untouched (still 5, not changed to ReplaceIndex)
+        let mut wal_file = File::open("compact.wal").unwrap();
+        let mut wal_buf = [0u8; 1];
+        wal_file.read_exact(&mut wal_buf).unwrap();
+        assert_eq!(wal_buf[0], 5, "WAL should not change when primary data.db is missing");
+
+        teardown_replace_files();
+    }
+
+    #[test]
+    fn test_replace_data_temp_exists_replaces_successfully_and_updates_wal() {
+        teardown_replace_files();
+
+        // 1. Arrange: Create both files explicitly ahead of time
+        File::create("data.db").unwrap();
+
+        let mut temp_file = File::create("data.temp.db").unwrap();
+        temp_file.write_all(b"compacted_clean_data_payload").unwrap();
+        temp_file.flush().unwrap();
+        drop(temp_file);
+
+        let compact_file = setup_clean_wal();
+
+        {
+            let mut compactor = CompactRecovery {
+                compact_file,
+            };
+
+            // 2. Act: Run replacement
+            let res = compactor.replace_data();
+            assert!(res.is_ok());
+        }
+
+        // 3. Assert: Verify swap complete and temp file moved to permanent spot
+        assert!(!Path::new("data.temp.db").exists());
+        assert!(Path::new("data.db").exists());
+
+        let mut db_content = Vec::new();
+        File::open("data.db").unwrap().read_to_end(&mut db_content).unwrap();
+        assert_eq!(db_content, b"compacted_clean_data_payload");
+
+        // 4. Assert: WAL advanced to ReplaceIndex (byte code 11)
+        let mut wal_buf = [0u8; 1];
+        File::open("compact.wal").unwrap().read_exact(&mut wal_buf).unwrap();
+        assert_eq!(wal_buf, ReplaceIndex.to_bytes());
+
+        teardown_replace_files();
+    }
+
+    #[test]
+    fn test_replace_data_temp_missing_triggers_copy_data_to_and_succeeds() {
+        teardown_replace_files();
+        let _ = std::fs::remove_file("index.db"); // Clean old index artifacts
+
+        // 1. Arrange: Create a valid data.db with exactly 1 live record
+        let mut db_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("data.db")
+            .unwrap();
+
+        let k = "flow_key";
+        let v = "live_value";
+        db_file.write_all(&(k.len() as u32).to_le_bytes()).unwrap();
+        db_file.write_all(&(v.len() as u32).to_le_bytes()).unwrap();
+        db_file.write_all(k.as_bytes()).unwrap();
+        db_file.write_all(v.as_bytes()).unwrap();
+        db_file.flush().unwrap();
+        drop(db_file);
+
+        // 2. Arrange: Create matching valid index.db file tracking that record
+        let mut idx_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("index.db")
+            .unwrap();
+        idx_file.write_all(&(k.len() as u32).to_le_bytes()).unwrap();
+        idx_file.write_all(k.as_bytes()).unwrap();
+        idx_file.write_all(&0u64.to_le_bytes()).unwrap(); // offset 0
+        idx_file.flush().unwrap();
+        drop(idx_file);
+
+        // 3. Arrange: Ensure data.temp.db is ABSENT before starting
+        let _ = std::fs::remove_file("data.temp.db");
+        assert!(!Path::new("data.temp.db").exists(), "Setup error: data.temp.db should not exist here");
+
+        let compact_file = setup_clean_wal();
+
+        {
+            let mut compactor = CompactRecovery {
+                compact_file,
+            };
+
+            // 4. Act: Execute replacement loop (this internally calls copy_data_to and renames it)
+            let res = compactor.replace_data();
+            assert!(res.is_ok(), "replace_data failed: {:?}", res.unwrap_err());
+        } // <--- Compactor scope drops here, releasing all active descriptors
+
+        // 5. Assert: Final atomic parameters must succeed cleanly
+        assert!(
+            !Path::new("data.temp.db").exists(),
+            "Temporary file should have been cleanly moved/consumed by std::fs::rename"
+        );
+        assert!(Path::new("data.db").exists(), "data.db should be repaired and present");
+
+        let mut wal_buf = [0u8; 1];
+        File::open("compact.wal").unwrap().read_exact(&mut wal_buf).unwrap();
+        
+        teardown_replace_files();
+        let _ = std::fs::remove_file("index.db");
+    }
+
+
+}
+
