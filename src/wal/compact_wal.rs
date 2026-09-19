@@ -11,7 +11,6 @@ pub(crate) enum CompactOperation {
     CreateIndex = 2,
     CopyDataTo = 3,
     ReplaceData = 4,
-    ReplaceIndex = 5,
 }
 impl CompactOperation {
     pub(crate) fn to_bytes(self) -> [u8; 1] {
@@ -24,7 +23,6 @@ impl CompactOperation {
             2 => Ok(CreateIndex),
             3 => Ok(CopyDataTo),
             4 => Ok(ReplaceData),
-            5 => Ok(ReplaceIndex),
             _ => Err(AppError::UnknownCompactOperation),
         }
     }
@@ -109,50 +107,6 @@ mod tests {
             .unwrap()
     }
 
-    // A mock wrapper mimicking the target struct layout for your Wal implementation
-    struct TestWal {
-        compact_file: File,
-    }
-
-    impl TestWal {
-        fn write_compact_operation(&mut self, op: CompactOperation) -> Result<(), AppError> {
-            self.compact_file
-                .set_len(0)
-                .map_err(AppError::CleanWalFile)?;
-            self.compact_file
-                .seek(SeekFrom::Start(0))
-                .map_err(AppError::SeekInWal)?;
-            self.compact_file
-                .write_all(&op.to_bytes())
-                .map_err(AppError::WriteToWal)?;
-            self.compact_file.sync_all().map_err(AppError::WriteToWal)?;
-            Ok(())
-        }
-
-        fn advance_to_next_step(&mut self, op: CompactOperation) -> Result<(), AppError> {
-            match op {
-                CreateData => self.write_compact_operation(CreateIndex),
-                CreateIndex => self.write_compact_operation(CopyDataTo),
-                CopyDataTo => self.write_compact_operation(ReplaceData),
-                ReplaceData => self.write_compact_operation(ReplaceIndex),
-                ReplaceIndex => self.clear_wal_compact(),
-            }
-        }
-
-        fn clear_wal_compact(&mut self) -> Result<(), AppError> {
-            self.compact_file
-                .set_len(0)
-                .map_err(AppError::CleanWalFile)?;
-            self.compact_file
-                .sync_all()
-                .map_err(AppError::CleanWalFile)?;
-            self.compact_file
-                .seek(SeekFrom::Start(0))
-                .map_err(AppError::SeekInWal)?;
-            Ok(())
-        }
-    }
-
     // ========================================================================== --
     // 1. CONVERSION TESTS                                                        --
     // ========================================================================== --
@@ -164,7 +118,6 @@ mod tests {
             (CreateIndex, 2),
             (CopyDataTo, 3),
             (ReplaceData, 4),
-            (ReplaceIndex, 5),
         ];
 
         for (op, expected_byte) in all_operations {
@@ -206,18 +159,12 @@ mod tests {
     fn test_writing_each_operation_produces_exactly_1_byte() {
         let path = get_temp_wal_path();
         let file = create_test_wal(&path);
-        let mut wal = TestWal { compact_file: file };
+        let mut wal = CompactWal { file };
 
-        let operations = vec![
-            CreateData,
-            CreateIndex,
-            CopyDataTo,
-            ReplaceData,
-            ReplaceIndex,
-        ];
+        let operations = vec![CreateData, CreateIndex, CopyDataTo, ReplaceData];
 
         for op in operations {
-            wal.write_compact_operation(op).unwrap();
+            wal.write_operation(op).unwrap();
 
             // Check metadata sizing directly from disk
             let metadata = std::fs::metadata(&path).unwrap();
@@ -230,8 +177,8 @@ mod tests {
 
             // Read back and check inner byte alignment values
             let mut read_buf = [0u8; 1];
-            wal.compact_file.seek(SeekFrom::Start(0)).unwrap();
-            wal.compact_file.read_exact(&mut read_buf).unwrap();
+            wal.file.seek(SeekFrom::Start(0)).unwrap();
+            wal.file.read_exact(&mut read_buf).unwrap();
             assert_eq!(read_buf, op.to_bytes());
         }
 
@@ -243,53 +190,17 @@ mod tests {
     // ========================================================================== --
 
     #[test]
-    fn test_advancing_each_state_produces_the_expected_next_state() {
+    fn test_replace_data_clears_the_wal() {
         let path = get_temp_wal_path();
         let file = create_test_wal(&path);
-        let mut wal = TestWal { compact_file: file };
-
-        // Matrix map representing transition rules: (CurrentState -> ExpectedNextState)
-        let transition_matrix = vec![
-            (CreateData, CreateIndex),
-            (CreateIndex, CopyDataTo),
-            (CopyDataTo, ReplaceData),
-            (ReplaceData, ReplaceIndex),
-        ];
-
-        for (current, expected_next) in transition_matrix {
-            wal.advance_to_next_step(current).unwrap();
-
-            // Extract the newly written byte value directly out of the stream
-            let mut read_buf = [0u8; 1];
-            wal.compact_file.seek(SeekFrom::Start(0)).unwrap();
-            wal.compact_file.read_exact(&mut read_buf).unwrap();
-
-            assert_eq!(
-                read_buf,
-                expected_next.to_bytes(),
-                "Advancing from {:?} did not yield expected state {:?}",
-                current,
-                expected_next
-            );
-        }
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_index_temp_replaced_clears_the_wal() {
-        let path = get_temp_wal_path();
-        let file = create_test_wal(&path);
-        let mut wal = TestWal { compact_file: file };
+        let mut wal = CompactWal { file };
 
         // Put down initial boilerplate layout data into file beforehand
-        wal.write_compact_operation(ReplaceIndex).unwrap();
+        wal.write_operation(ReplaceData).unwrap();
         let initial_meta = std::fs::metadata(&path).unwrap();
         assert_eq!(initial_meta.len(), 1);
 
-        // Advancing from final state invokes truncation rules
-        wal.advance_to_next_step(ReplaceIndex).unwrap();
-
+        wal.clear_wal_compact().unwrap();
         // Verify the file footprint was truncated down to 0 bytes completely
         let final_meta = std::fs::metadata(&path).unwrap();
         assert_eq!(
@@ -299,7 +210,7 @@ mod tests {
         );
 
         // Verify seek pointer position resets safely to zero boundary constraints
-        let pointer_pos = wal.compact_file.stream_position().unwrap();
+        let pointer_pos = wal.file.stream_position().unwrap();
         assert_eq!(pointer_pos, 0);
 
         let _ = std::fs::remove_file(&path);

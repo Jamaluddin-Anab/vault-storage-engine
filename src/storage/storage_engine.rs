@@ -223,7 +223,6 @@ impl StorageEngine {
 
         self.compact_wal.write_operation(ReplaceData)?;
         std::fs::rename("data.temp.db", "data.db").map_err(AppError::ReplaceDbFile)?;
-        self.compact_wal.write_operation(ReplaceIndex)?;
         std::fs::rename("index.temp.db", "index.db").map_err(AppError::ReplaceIndexFile)?;
         self.compact_wal.clear_wal_compact()?;
 
