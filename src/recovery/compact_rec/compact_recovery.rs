@@ -1,5 +1,4 @@
 use crate::error::AppError;
-use crate::storage::index::Index;
 use crate::storage::storage_engine::ReadStatus::*;
 use crate::storage::storage_engine::StorageEngine;
 use crate::wal::compact_wal::CompactOperation;
@@ -55,39 +54,10 @@ impl CompactRecovery {
         }
     }
 
-    fn dispatch(&self, operation: CompactOperation) -> Result<(), AppError> {
+    fn dispatch(&mut self, operation: CompactOperation) -> Result<(), AppError> {
         match operation {
-            CreateData => {}
-            CreateIndex => {}
-            CopyDataTo => {}
-            ReplaceData => {}
-            ReplaceIndex => {}
+            ReplaceData => self.replace_data(),
         }
-        Ok(())
-    }
-
-    fn create_data(&mut self) -> Result<(), AppError> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(Path::new("data.temp.db"))
-            .map_err(AppError::CreateTempFile)?;
-
-        self.update_compact_wal(CreateIndex)
-    }
-
-    fn create_index(&mut self) -> Result<(), AppError> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(Path::new("index.temp.db"))
-            .map_err(AppError::CreateTempFile)?;
-
-        self.update_compact_wal(CopyDataTo)
     }
 
     fn copy_data_to(&mut self) -> Result<(), AppError> {
@@ -118,11 +88,9 @@ impl CompactRecovery {
             .open(Path::new("index.temp.db"))
             .map_err(AppError::LoadTempIndexFile)?;
 
-        let index = Index::load_index()?;
-
-        for (key, old_offset) in &index.index {
+        for (key, old_offset) in self.rebuild_index_from_db()? {
             db_file
-                .seek(SeekFrom::Start(*old_offset))
+                .seek(SeekFrom::Start(old_offset))
                 .map_err(AppError::SeekInDb)?;
 
             let key_len = match StorageEngine::rebuild_len(&mut db_file)? {
@@ -162,25 +130,46 @@ impl CompactRecovery {
             compact_offset.insert(key.clone(), new_offset);
         }
         data_temp.sync_all().map_err(AppError::WriteToTempDb)?;
+        StorageEngine::write_temp_index(&mut index_temp, &compact_offset)?;
 
-        for (new_key, new_offset) in &compact_offset {
-            let key_len = new_key.len() as u32;
-            let record = [
-                key_len.to_le_bytes().as_slice(),
-                new_key.as_bytes(),
-                &new_offset.to_le_bytes(),
-            ]
-            .concat();
-
-            index_temp
-                .write_all(&record)
-                .map_err(AppError::WriteToTempIndex)?;
-        }
         index_temp.sync_all().map_err(AppError::WriteToTempIndex)?;
 
         self.update_compact_wal(ReplaceData)?;
 
         Ok(())
+    }
+
+    fn rebuild_index_from_db(&mut self) -> Result<HashMap<String, u64>, AppError> {
+        let mut db_file = OpenOptions::new()
+            .read(true)
+            .open(Path::new("data.db"))
+            .map_err(AppError::LoadDbFile)?;
+        let mut new_offset = HashMap::<String, u64>::new();
+
+        loop {
+            let offset = db_file.stream_position().map_err(AppError::SeekInDb)?;
+
+            let key_len = match StorageEngine::rebuild_len(&mut db_file)? {
+                Eof => return Ok(new_offset),
+                CompleteRead(key_len) => key_len,
+                CorruptTail => return Err(AppError::CorruptedDb),
+            };
+            let value_len = match StorageEngine::rebuild_len(&mut db_file)? {
+                Eof => return Ok(new_offset),
+                CompleteRead(value_len) => value_len,
+                CorruptTail => return Err(AppError::CorruptedDb),
+            };
+            let mut key_buf = vec![0u8; key_len as usize];
+            db_file
+                .read_exact(&mut key_buf)
+                .map_err(AppError::ReadKey)?;
+            let key = String::from_utf8(key_buf).map_err(AppError::ConvertUtf8ToString)?;
+
+            db_file
+                .seek(SeekFrom::Current(value_len as i64))
+                .map_err(AppError::SeekInDb)?;
+            new_offset.insert(key, offset);
+        }
     }
 
     fn replace_data(&mut self) -> Result<(), AppError> {
@@ -222,222 +211,6 @@ impl CompactRecovery {
             .map_err(AppError::SeekInWal)?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test_compact_initialization {
-    use super::*;
-    use std::fs::{File, OpenOptions};
-    use std::io::{Read, Seek, SeekFrom, Write};
-    use std::path::Path;
-
-    struct MockCompactor {
-        compact_file: File,
-    }
-
-    impl MockCompactor {
-        fn create_temp_file_test(&mut self, file_name: &str) -> Result<(), AppError> {
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(Path::new(file_name))
-                .map_err(AppError::CreateTempFile)?;
-
-            Ok(())
-        }
-
-        fn update_compact_wal(&mut self, operation: CompactOperation) -> Result<(), AppError> {
-            self.compact_file
-                .set_len(0)
-                .map_err(AppError::CleanWalFile)?;
-
-            self.compact_file
-                .seek(SeekFrom::Start(0))
-                .map_err(AppError::SeekInWal)?;
-
-            self.compact_file
-                .write_all(&operation.to_bytes())
-                .map_err(AppError::WriteToWal)?;
-
-            self.compact_file.sync_all().map_err(AppError::WriteToWal)?;
-            Ok(())
-        }
-    }
-
-    fn setup_clean_compact_wal() -> File {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open("compact.wal")
-            .unwrap()
-    }
-
-    fn teardown_compact_files(file_name: &str) {
-        let _ = std::fs::remove_file(file_name);
-        let _ = std::fs::remove_file("compact.wal");
-    }
-
-    #[test]
-    fn test_create_data_no_existing_temp_db() {
-        let _ = std::fs::remove_file("data.temp.db");
-        let compact_file = setup_clean_compact_wal();
-
-        {
-            let mut compactor = MockCompactor { compact_file };
-            assert!(compactor.create_temp_file_test("data.temp.db").is_ok());
-            compactor.update_compact_wal(CreateIndex).unwrap();
-        }
-        assert!(
-            Path::new("data.temp.db").exists(),
-            "data.temp.db was not created"
-        );
-
-        let data_meta = std::fs::metadata("data.temp.db").unwrap();
-        assert_eq!(data_meta.len(), 0, "data.temp.db length should be 0");
-
-        let mut wal_file = File::open("compact.wal").unwrap();
-        let mut wal_buf = [0u8; 1];
-        wal_file.read_exact(&mut wal_buf).unwrap();
-
-        assert_eq!(
-            wal_buf,
-            CreateIndex.to_bytes(),
-            "compact.wal did not advance to CreateIndex"
-        );
-        assert_eq!(
-            wal_file.metadata().unwrap().len(),
-            1,
-            "compact.wal should contain exactly 1 byte"
-        );
-
-        teardown_compact_files("data.temp.db");
-    }
-
-    #[test]
-    fn test_create_data_with_existing_garbage_temp_db() {
-        {
-            let mut dirty_file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open("data.temp.db")
-                .unwrap();
-            dirty_file
-                .write_all(b"corrupted_stale_garbage_database_bytes_payload")
-                .unwrap();
-            dirty_file.flush().unwrap();
-        }
-
-        let compact_file = setup_clean_compact_wal();
-
-        {
-            let mut compactor = MockCompactor { compact_file };
-            assert!(compactor.create_temp_file_test("data.temp.db").is_ok());
-            compactor.update_compact_wal(CreateIndex).unwrap();
-        }
-
-        assert!(Path::new("data.temp.db").exists());
-
-        let data_meta = std::fs::metadata("data.temp.db").unwrap();
-        assert_eq!(
-            data_meta.len(),
-            0,
-            "Stale bytes were not truncated from data.temp.db"
-        );
-
-        let mut wal_file = File::open("compact.wal").unwrap();
-        let mut wal_buf = [0u8; 1];
-        wal_file.read_exact(&mut wal_buf).unwrap();
-
-        assert_eq!(wal_buf, CreateIndex.to_bytes());
-        assert_eq!(wal_file.metadata().unwrap().len(), 1);
-
-        teardown_compact_files("data.temp.db");
-    }
-
-    #[test]
-    fn test_create_index_no_existing_temp_db() {
-        let _ = std::fs::remove_file("index.temp.db");
-        let compact_file = setup_clean_compact_wal();
-
-        {
-            let mut compactor = MockCompactor { compact_file };
-            assert!(compactor.create_temp_file_test("index.temp.db").is_ok());
-            compactor.update_compact_wal(CopyDataTo).unwrap();
-        }
-
-        assert!(
-            Path::new("index.temp.db").exists(),
-            "index.temp.db was not created"
-        );
-
-        let data_meta = std::fs::metadata("index.temp.db").unwrap();
-        assert_eq!(data_meta.len(), 0, "index.temp.db length should be 0");
-
-        let mut wal_file = File::open("compact.wal").unwrap();
-        let mut wal_buf = [0u8; 1];
-        wal_file.read_exact(&mut wal_buf).unwrap();
-
-        assert_eq!(
-            wal_buf,
-            CopyDataTo.to_bytes(),
-            "compact.wal did not advance to CopyDataTo"
-        );
-        assert_eq!(
-            wal_file.metadata().unwrap().len(),
-            1,
-            "compact.wal should contain exactly 1 byte"
-        );
-
-        teardown_compact_files("index.temp.db");
-    }
-
-    #[test]
-    fn test_create_index_with_existing_garbage_temp_db() {
-        {
-            let mut dirty_file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open("index.temp.db")
-                .unwrap();
-            dirty_file
-                .write_all(b"corrupted_stale_garbage_database_bytes_payload")
-                .unwrap();
-            dirty_file.flush().unwrap();
-        }
-
-        let compact_file = setup_clean_compact_wal();
-
-        {
-            let mut compactor = MockCompactor { compact_file };
-
-            assert!(compactor.create_temp_file_test("index.temp.db").is_ok());
-            compactor.update_compact_wal(CopyDataTo).unwrap();
-        }
-
-        assert!(Path::new("index.temp.db").exists());
-
-        let data_meta = std::fs::metadata("index.temp.db").unwrap();
-        assert_eq!(
-            data_meta.len(),
-            0,
-            "Stale bytes were not truncated from index.temp.db"
-        );
-
-        let mut wal_file = File::open("compact.wal").unwrap();
-        let mut wal_buf = [0u8; 1];
-        wal_file.read_exact(&mut wal_buf).unwrap();
-
-        assert_eq!(wal_buf, CopyDataTo.to_bytes());
-        assert_eq!(wal_file.metadata().unwrap().len(), 1);
-
-        teardown_compact_files("index.temp.db");
     }
 }
 
@@ -784,7 +557,7 @@ mod test_copy_data_to {
 mod test_replace_data {
     use super::*;
     use std::fs::{File, OpenOptions};
-    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::io::{Read, Seek, Write};
     use std::path::Path;
 
     fn teardown_replace_files() {
@@ -837,6 +610,16 @@ mod test_replace_data {
         teardown_replace_files();
     }
 
+    fn create_record(key: &str, old_value: &str) -> Vec<u8> {
+        [
+            (key.len() as u32).to_le_bytes().as_slice(),
+            (old_value.len() as u32).to_le_bytes().as_slice(),
+            key.as_bytes(),
+            old_value.as_bytes(),
+        ]
+        .concat()
+    }
+
     #[test]
     fn test_replace_data_rebuilds_existing_temp_files_and_replaces_successfully() {
         teardown_replace_files();
@@ -858,27 +641,15 @@ mod test_replace_data {
 
         // Old record
         let old_value = "jamal";
-        let old_record = [
-            (key.len() as u32).to_le_bytes().as_slice(),
-            (old_value.len() as u32).to_le_bytes().as_slice(),
-            key.as_bytes(),
-            old_value.as_bytes(),
-        ]
-        .concat();
+        let old_record = create_record(key, old_value);
 
         data_db.write_all(&old_record).unwrap();
 
         // New/live record
-        let new_value = "beheshta";
+        let new_value = "sam";
         let new_offset = data_db.stream_position().unwrap();
 
-        let new_record = [
-            (key.len() as u32).to_le_bytes().as_slice(),
-            (new_value.len() as u32).to_le_bytes().as_slice(),
-            key.as_bytes(),
-            new_value.as_bytes(),
-        ]
-        .concat();
+        let new_record = create_record(key, new_value);
 
         data_db.write_all(&new_record).unwrap();
         data_db.sync_all().unwrap();
@@ -968,7 +739,7 @@ mod test_replace_data {
         data_db.read_exact(&mut value_buf).unwrap();
 
         assert_eq!(String::from_utf8(key_buf).unwrap(), "name");
-        assert_eq!(String::from_utf8(value_buf).unwrap(), "beheshta");
+        assert_eq!(String::from_utf8(value_buf).unwrap(), "sam");
 
         // There must be no second record.
         let mut extra = [0u8; 1];

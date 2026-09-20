@@ -283,8 +283,8 @@ mod test_db_recovery {
         db_file.read_to_end(&mut db_buf).unwrap();
 
         let expected_record = [
-            (11u32).to_le_bytes().as_slice(), // key_len ("missing_key")
-            (10u32).to_le_bytes().as_slice(), // value_len ("some_value")
+            11u32.to_le_bytes().as_slice(), // key_len ("missing_key")
+            10u32.to_le_bytes().as_slice(), // value_len ("some_value")
             b"missing_key",
             b"some_value",
         ]
@@ -396,9 +396,9 @@ mod test_index_recovery {
             .read_to_end(&mut idx_buf)
             .unwrap();
         let expected_idx = [
-            (13u32).to_le_bytes().as_slice(),
+            13u32.to_le_bytes().as_slice(),
             b"new_index_key",
-            (500u64).to_le_bytes().as_slice(),
+            500u64.to_le_bytes().as_slice(),
         ]
         .concat();
         assert_eq!(idx_buf, expected_idx);

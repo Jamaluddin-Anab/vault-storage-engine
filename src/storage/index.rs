@@ -14,7 +14,7 @@ pub(crate) struct Index {
 impl Index {
     const MAX_LEN: usize = 256;
 
-    pub(crate) fn load_index() -> Result<Index, AppError> {
+    pub(super) fn load_index() -> Result<Index, AppError> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)

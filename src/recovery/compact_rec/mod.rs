@@ -1,1 +1,1 @@
-mod compact_recovery;
+pub(super) mod compact_recovery;

@@ -74,8 +74,6 @@ pub(crate) enum AppError {
     ReadOffset(Error),
     #[error("can not access file: {0}")]
     FileAccess(Error),
-    #[error("can not create TempFile: {0}")]
-    CreateTempFile(Error),
     #[error("data.db file not found.")]
     DbFileNotExist,
     #[error("can not seek in .temp.db file: {0}")]

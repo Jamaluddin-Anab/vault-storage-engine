@@ -140,7 +140,8 @@ impl StorageEngine {
     }
 
     pub(crate) fn compact(&mut self) -> Result<(), AppError> {
-        self.compact_wal.write_operation(CreateData)?;
+        self.compact_wal.write_operation(ReplaceData)?;
+
         let mut data_temp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -149,7 +150,6 @@ impl StorageEngine {
             .open("data.temp.db")
             .map_err(AppError::LoadTempDbFile)?;
 
-        self.compact_wal.write_operation(CreateIndex)?;
         let mut index_temp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -160,7 +160,6 @@ impl StorageEngine {
 
         let mut compact_offset = HashMap::<String, u64>::new();
 
-        self.compact_wal.write_operation(CopyDataTo)?;
         for (key, old_offset) in &self.index.index {
             self.file
                 .seek(SeekFrom::Start(*old_offset))
@@ -185,7 +184,7 @@ impl StorageEngine {
                 .read_exact(&mut value_buf)
                 .map_err(|_| AppError::CorruptedDb)?;
 
-            let new_offset = data_temp.stream_position().map_err(AppError::SeekInWal)?;
+            let new_offset = data_temp.stream_position().map_err(AppError::SeekInTemp)?;
             let key_len_u32 = key.len() as u32;
             let value_len_u32 = value_buf.len() as u32;
 
@@ -204,26 +203,15 @@ impl StorageEngine {
         }
         data_temp.sync_all().map_err(AppError::WriteToTempDb)?;
 
-        for (key, offset) in &compact_offset {
-            let key_len = key.len() as u32;
-            let record = [
-                key_len.to_le_bytes().as_slice(),
-                key.as_bytes(),
-                &offset.to_le_bytes(),
-            ]
-            .concat();
-            index_temp
-                .write_all(&record)
-                .map_err(AppError::WriteToTempIndex)?;
-        }
+        Self::write_temp_index(&mut index_temp, &compact_offset)?;
         index_temp.sync_all().map_err(AppError::WriteToTempIndex)?;
 
         drop(index_temp);
         drop(data_temp);
 
-        self.compact_wal.write_operation(ReplaceData)?;
         std::fs::rename("data.temp.db", "data.db").map_err(AppError::ReplaceDbFile)?;
         std::fs::rename("index.temp.db", "index.db").map_err(AppError::ReplaceIndexFile)?;
+
         self.compact_wal.clear_wal_compact()?;
 
         self.file = OpenOptions::new()
@@ -244,6 +232,25 @@ impl StorageEngine {
 
         self.index.update_memory_map(compact_offset, new_index);
 
+        Ok(())
+    }
+
+    pub(crate) fn write_temp_index(
+        index_temp: &mut File,
+        compact_offset: &HashMap<String, u64>,
+    ) -> Result<(), AppError> {
+        for (key, offset) in compact_offset {
+            let key_len = key.len() as u32;
+            let record = [
+                key_len.to_le_bytes().as_slice(),
+                key.as_bytes(),
+                &offset.to_le_bytes(),
+            ]
+            .concat();
+            index_temp
+                .write_all(&record)
+                .map_err(AppError::WriteToTempIndex)?;
+        }
         Ok(())
     }
 }

@@ -7,10 +7,7 @@ use std::path::Path;
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompactOperation {
-    CreateData = 1,
-    CreateIndex = 2,
-    CopyDataTo = 3,
-    ReplaceData = 4,
+    ReplaceData = 1,
 }
 impl CompactOperation {
     pub(crate) fn to_bytes(self) -> [u8; 1] {
@@ -19,10 +16,7 @@ impl CompactOperation {
 
     pub(crate) fn from_bytes(bytes: [u8; 1]) -> Result<Self, AppError> {
         match bytes[0] {
-            1 => Ok(CreateData),
-            2 => Ok(CreateIndex),
-            3 => Ok(CopyDataTo),
-            4 => Ok(ReplaceData),
+            1 => Ok(ReplaceData),
             _ => Err(AppError::UnknownCompactOperation),
         }
     }
@@ -89,7 +83,7 @@ mod tests {
 
     // Import variants to prevent repetitive prefix nesting
 
-    // Generates a isolated temporary file path unique to each thread execution
+    // Generates an isolated temporary file path unique to each thread execution
     fn get_temp_wal_path() -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -113,12 +107,7 @@ mod tests {
 
     #[test]
     fn test_every_enum_to_and_from_bytes() {
-        let all_operations = vec![
-            (CreateData, 1),
-            (CreateIndex, 2),
-            (CopyDataTo, 3),
-            (ReplaceData, 4),
-        ];
+        let all_operations = vec![(ReplaceData, 1)];
 
         for (op, expected_byte) in all_operations {
             // Test Forward Conversion: Enum -> Bytes
@@ -161,7 +150,7 @@ mod tests {
         let file = create_test_wal(&path);
         let mut wal = CompactWal { file };
 
-        let operations = vec![CreateData, CreateIndex, CopyDataTo, ReplaceData];
+        let operations = vec![ReplaceData];
 
         for op in operations {
             wal.write_operation(op).unwrap();
